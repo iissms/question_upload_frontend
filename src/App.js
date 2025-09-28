@@ -9,6 +9,12 @@ const MODE_OPTIONS = [
   { value: "tg", label: "TG" },
 ];
 
+const MODE_ENDPOINTS = {
+  id: "/upload/id",
+  cb: "/upload/cb",
+  tg: "/upload/tg",
+};
+
 const buildUrl = (path, params) => {
   const url = new URL(`${API_BASE_URL}${path}`, window.location.origin);
   if (params) {
@@ -49,9 +55,13 @@ function App() {
   const [selectedTopic, setSelectedTopic] = useState("");
   const [selectionMode, setSelectionMode] = useState("");
   const [uploadedFile, setUploadedFile] = useState(null);
+  const [fileInputKey, setFileInputKey] = useState(0);
 
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  const [uploadSuccess, setUploadSuccess] = useState(null);
 
   const fetchData = async (path, params) => {
     const url = buildUrl(path, params);
@@ -127,24 +137,107 @@ function App() {
   const handleModeChange = (event) => {
     setSelectionMode(event.target.value);
     setUploadedFile(null);
+    setFileInputKey((key) => key + 1);
+    setUploadError(null);
+    setUploadSuccess(null);
   };
 
   const handleFileChange = (event) => {
     const [file] = event.target.files || [];
     setUploadedFile(file || null);
+    if (!file) {
+      setFileInputKey((key) => key + 1);
+    }
+    setUploadError(null);
+    setUploadSuccess(null);
   };
 
-  const handleUploadSubmit = (event) => {
+  const handleUploadSubmit = async (event) => {
     event.preventDefault();
-    if (!uploadedFile) {
+    if (!selectionMode || !uploadedFile) {
+      setUploadError("Select an option and choose a JSON file before submitting.");
       return;
     }
 
-    // Placeholder for future upload handling logic.
-    console.log("Ready to upload", {
-      selectionMode,
-      fileName: uploadedFile.name,
-    });
+    if (!selectedYear || !selectedSubject || !selectedChapter || !selectedTopic) {
+      setUploadError("Complete the year, subject, chapter, and topic selection before uploading.");
+      return;
+    }
+
+    const endpoint = MODE_ENDPOINTS[selectionMode];
+    if (!endpoint) {
+      setUploadError("Unsupported option selected.");
+      return;
+    }
+
+    setUploadError(null);
+    setUploadSuccess(null);
+    setUploading(true);
+
+    try {
+      const fileText = await uploadedFile.text();
+      let parsedJson;
+
+      try {
+        parsedJson = JSON.parse(fileText);
+      } catch (parseError) {
+        throw new Error("Uploaded file is not valid JSON.");
+      }
+
+      const response = await fetch(buildUrl(endpoint), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          mode: selectionMode,
+          yearId: selectedYear,
+          subjectId: selectedSubject,
+          chapterId: selectedChapter,
+          topicId: selectedTopic,
+          payload: parsedJson,
+        }),
+      });
+
+      const responseBody = await response.text();
+
+      if (!response.ok) {
+        let message = `Upload failed with status ${response.status}`;
+        if (responseBody) {
+          try {
+            const parsed = JSON.parse(responseBody);
+            if (parsed?.error) {
+              message = parsed.error;
+            } else if (typeof parsed === "string") {
+              message = parsed;
+            }
+          } catch (parseError) {
+            message = responseBody;
+          }
+        }
+        throw new Error(message);
+      }
+
+      let successMessage = "Upload completed successfully.";
+      if (responseBody) {
+        try {
+          const parsed = JSON.parse(responseBody);
+          if (parsed?.message) {
+            successMessage = parsed.message;
+          }
+        } catch (ignored) {
+          successMessage = responseBody;
+        }
+      }
+
+      setUploadSuccess(successMessage);
+      setUploadedFile(null);
+      setFileInputKey((key) => key + 1);
+    } catch (uploadErr) {
+      setUploadError(uploadErr.message || "Upload failed.");
+    } finally {
+      setUploading(false);
+    }
   };
 
   const getDisplayName = (item, keys) => {
@@ -280,6 +373,7 @@ function App() {
             <label className="file-input" htmlFor="json-upload">
               <span>Upload JSON file</span>
               <input
+                key={fileInputKey}
                 id="json-upload"
                 type="file"
                 accept="application/json"
@@ -288,9 +382,12 @@ function App() {
               {uploadedFile && <p className="file-name">{uploadedFile.name}</p>}
             </label>
 
-            <button type="submit" disabled={!uploadedFile}>
-              Submit
+            <button type="submit" disabled={!uploadedFile || uploading}>
+              {uploading ? "Uploading…" : "Submit"}
             </button>
+
+            {uploadError && <p className="status error">{uploadError}</p>}
+            {uploadSuccess && <p className="status success">{uploadSuccess}</p>}
           </form>
         )}
       </section>

@@ -91,6 +91,11 @@
   font-weight: 600;
 }
 
+.status.success {
+  color: #16a34a;
+  font-weight: 600;
+}
+
 .mode-selector {
   border: 1px solid #e5e7eb;
   border-radius: 0.75rem;
