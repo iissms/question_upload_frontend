@@ -116,15 +116,32 @@ function App() {
     setSelectedTopic(event.target.value);
   };
 
+  const getDisplayName = (item, keys) => {
+    if (!item) return undefined;
+    return keys.map((key) => item[key]).find((value) => value && `${value}`.trim().length > 0);
+  };
+
   const selectedSummary = useMemo(() => {
     if (!selectedYear) {
       return "Select a year to get started.";
     }
 
-    const yearName = years.find((year) => `${year.year_id}` === selectedYear)?.name;
-    const subjectName = subjects.find((subject) => `${subject.subject_id}` === selectedSubject)?.name;
-    const chapterName = chapters.find((chapter) => `${chapter.chapter_id}` === selectedChapter)?.name;
-    const topicName = topics.find((topic) => `${topic.topic_id}` === selectedTopic)?.name;
+    const yearName = getDisplayName(
+      years.find((year) => `${year.year_id}` === selectedYear),
+      ["year_name", "name", "title"],
+    );
+    const subjectName = getDisplayName(
+      subjects.find((subject) => `${subject.subject_id}` === selectedSubject),
+      ["subject_name", "name", "title"],
+    );
+    const chapterName = getDisplayName(
+      chapters.find((chapter) => `${chapter.chapter_id}` === selectedChapter),
+      ["chapter_name", "name", "title"],
+    );
+    const topicName = getDisplayName(
+      topics.find((topic) => `${topic.topic_id}` === selectedTopic),
+      ["topic_name", "name", "title"],
+    );
 
     return [yearName, subjectName, chapterName, topicName]
       .filter(Boolean)
@@ -133,22 +150,22 @@ function App() {
 
   const yearOptions = years.map((year) => ({
     value: `${year.year_id}`,
-    label: year.name || year.title || `Year ${year.year_id}`,
+    label: getDisplayName(year, ["year_name", "name", "title"]) || `Year ${year.year_id}`,
   }));
 
   const subjectOptions = subjects.map((subject) => ({
     value: `${subject.subject_id}`,
-    label: subject.name || subject.title || `Subject ${subject.subject_id}`,
+    label: getDisplayName(subject, ["subject_name", "name", "title"]) || `Subject ${subject.subject_id}`,
   }));
 
   const chapterOptions = chapters.map((chapter) => ({
     value: `${chapter.chapter_id}`,
-    label: chapter.name || chapter.title || `Chapter ${chapter.chapter_id}`,
+    label: getDisplayName(chapter, ["chapter_name", "name", "title"]) || `Chapter ${chapter.chapter_id}`,
   }));
 
   const topicOptions = topics.map((topic) => ({
     value: `${topic.topic_id}`,
-    label: topic.name || topic.title || `Topic ${topic.topic_id}`,
+    label: getDisplayName(topic, ["topic_name", "name", "title"]) || `Topic ${topic.topic_id}`,
   }));
 
   return (
