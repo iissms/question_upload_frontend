@@ -62,6 +62,7 @@ function App() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
   const [uploadSuccess, setUploadSuccess] = useState(null);
+  const [uploadResponse, setUploadResponse] = useState(null);
 
   const fetchData = async (path, params) => {
     const url = buildUrl(path, params);
@@ -140,6 +141,7 @@ function App() {
     setFileInputKey((key) => key + 1);
     setUploadError(null);
     setUploadSuccess(null);
+    setUploadResponse(null);
   };
 
   const handleFileChange = (event) => {
@@ -150,6 +152,7 @@ function App() {
     }
     setUploadError(null);
     setUploadSuccess(null);
+    setUploadResponse(null);
   };
 
   const handleUploadSubmit = async (event) => {
@@ -200,34 +203,40 @@ function App() {
       });
 
       const responseBody = await response.text();
+      let parsedBody;
+      if (responseBody) {
+        try {
+          parsedBody = JSON.parse(responseBody);
+        } catch (parseError) {
+          parsedBody = null;
+        }
+      }
 
       if (!response.ok) {
         let message = `Upload failed with status ${response.status}`;
-        if (responseBody) {
-          try {
-            const parsed = JSON.parse(responseBody);
-            if (parsed?.error) {
-              message = parsed.error;
-            } else if (typeof parsed === "string") {
-              message = parsed;
-            }
-          } catch (parseError) {
-            message = responseBody;
+        if (parsedBody) {
+          if (parsedBody?.error) {
+            message = parsedBody.error;
+          } else if (typeof parsedBody === "string") {
+            message = parsedBody;
           }
+        } else if (responseBody) {
+          message = responseBody;
         }
         throw new Error(message);
       }
 
       let successMessage = "Upload completed successfully.";
-      if (responseBody) {
-        try {
-          const parsed = JSON.parse(responseBody);
-          if (parsed?.message) {
-            successMessage = parsed.message;
-          }
-        } catch (ignored) {
-          successMessage = responseBody;
+      if (parsedBody && typeof parsedBody === "object") {
+        if (parsedBody?.message) {
+          successMessage = parsedBody.message;
         }
+        setUploadResponse(parsedBody);
+      } else if (responseBody) {
+        successMessage = responseBody;
+        setUploadResponse(responseBody);
+      } else {
+        setUploadResponse(null);
       }
 
       setUploadSuccess(successMessage);
@@ -235,6 +244,7 @@ function App() {
       setFileInputKey((key) => key + 1);
     } catch (uploadErr) {
       setUploadError(uploadErr.message || "Upload failed.");
+      setUploadResponse(null);
     } finally {
       setUploading(false);
     }
@@ -388,6 +398,138 @@ function App() {
 
             {uploadError && <p className="status error">{uploadError}</p>}
             {uploadSuccess && <p className="status success">{uploadSuccess}</p>}
+            {uploadResponse && (
+              <div className="upload-response" aria-live="polite">
+                {typeof uploadResponse === "string" ? (
+                  <pre>{uploadResponse}</pre>
+                ) : (
+                  <>
+                    {uploadResponse.status && (
+                      <p>
+                        <strong>Status:</strong> {uploadResponse.status}
+                      </p>
+                    )}
+                    {uploadResponse.message && (
+                      <p>
+                        <strong>Message:</strong> {uploadResponse.message}
+                      </p>
+                    )}
+                    {uploadResponse.stats && (
+                      <div className="response-block">
+                        <h3>Stats</h3>
+                        <ul>
+                          {Object.entries(uploadResponse.stats).map(([key, value]) => (
+                            <li key={key}>
+                              <span className="response-key">{key}</span>
+                              <span className="response-value">{value}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {Array.isArray(uploadResponse.skipped_due_to_images) &&
+                      uploadResponse.skipped_due_to_images.length > 0 && (
+                        <div className="response-block">
+                          <h3>Skipped Due to Images</h3>
+                          <ul className="nested-list">
+                            {uploadResponse.skipped_due_to_images.map((item) => (
+                              <li key={item.key}>
+                                <p>
+                                  <span className="response-key">Key:</span>{" "}
+                                  <span className="response-value">{item.key}</span>
+                                </p>
+                                {item.reason && (
+                                  <p>
+                                    <span className="response-key">Reason:</span>{" "}
+                                    <span className="response-value">{item.reason}</span>
+                                  </p>
+                                )}
+                                {item.buckets && (
+                                  <div>
+                                    <p className="response-key">Buckets</p>
+                                    <ul>
+                                      {Object.entries(item.buckets).map(([bucketKey, bucketValue]) => (
+                                        <li key={bucketKey}>
+                                          <span className="response-key">{bucketKey}</span>
+                                          <span className="response-value">{bucketValue}</span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    {Array.isArray(uploadResponse.id_map_preview) &&
+                      uploadResponse.id_map_preview.length > 0 && (
+                        <div className="response-block">
+                          <h3>ID Map Preview</h3>
+                          <ul className="nested-list">
+                            {uploadResponse.id_map_preview.map((item, index) => (
+                              <li key={`${item.tg_id}-${index}`}>
+                                {Object.entries(item).map(([key, value]) => (
+                                  <p key={key}>
+                                    <span className="response-key">{key}</span>
+                                    <span className="response-value">{value}</span>
+                                  </p>
+                                ))}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    {uploadResponse.missing_images_summary && (
+                      <div className="response-block">
+                        <h3>Missing Images Summary</h3>
+                        {typeof uploadResponse.missing_images_summary.total_missing_source_files ===
+                          "number" && (
+                          <p>
+                            <span className="response-key">Total Missing Source Files</span>
+                            <span className="response-value">
+                              {uploadResponse.missing_images_summary.total_missing_source_files}
+                            </span>
+                          </p>
+                        )}
+                        {uploadResponse.missing_images_summary.by_bucket && (
+                          <div>
+                            <p className="response-key">By Bucket</p>
+                            <ul>
+                              {Object.entries(uploadResponse.missing_images_summary.by_bucket).map(
+                                ([bucketKey, bucketValue]) => (
+                                  <li key={bucketKey}>
+                                    <span className="response-key">{bucketKey}</span>
+                                    <span className="response-value">{bucketValue}</span>
+                                  </li>
+                                ),
+                              )}
+                            </ul>
+                          </div>
+                        )}
+                        {Array.isArray(uploadResponse.missing_images_summary.items) &&
+                          uploadResponse.missing_images_summary.items.length > 0 && (
+                            <div>
+                              <p className="response-key">Items</p>
+                              <ul className="nested-list">
+                                {uploadResponse.missing_images_summary.items.map((item, index) => (
+                                  <li key={index}>
+                                    <pre>{JSON.stringify(item, null, 2)}</pre>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                      </div>
+                    )}
+                    <details>
+                      <summary>View raw response</summary>
+                      <pre>{JSON.stringify(uploadResponse, null, 2)}</pre>
+                    </details>
+                  </>
+                )}
+              </div>
+            )}
           </form>
         )}
       </section>

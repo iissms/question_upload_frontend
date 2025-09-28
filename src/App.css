@@ -157,6 +157,75 @@
   color: #2563eb;
 }
 
+.upload-response {
+  border: 1px solid #e0e7ff;
+  border-radius: 0.75rem;
+  padding: 1rem;
+  background: #f5f7ff;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  color: #1f2937;
+}
+
+.upload-response pre {
+  margin: 0;
+  padding: 0.75rem;
+  background: #1f2937;
+  color: #f9fafb;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  font-family: "Fira Code", "Source Code Pro", monospace;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.response-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.response-block h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #4338ca;
+}
+
+.response-block ul {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.nested-list {
+  list-style: disc;
+}
+
+.response-key {
+  font-weight: 600;
+  text-transform: capitalize;
+  margin-right: 0.5rem;
+}
+
+.response-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.upload-response details {
+  border-top: 1px solid #dfe3ff;
+  padding-top: 0.5rem;
+}
+
+.upload-response summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #4f46e5;
+}
+
 .upload-form button {
   align-self: flex-start;
   background: #4f46e5;
