@@ -3,6 +3,12 @@ import "./App.css";
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "";
 
+const MODE_OPTIONS = [
+  { value: "id", label: "ID" },
+  { value: "cb", label: "CB" },
+  { value: "tg", label: "TG" },
+];
+
 const buildUrl = (path, params) => {
   const url = new URL(`${API_BASE_URL}${path}`, window.location.origin);
   if (params) {
@@ -41,6 +47,8 @@ function App() {
   const [selectedSubject, setSelectedSubject] = useState("");
   const [selectedChapter, setSelectedChapter] = useState("");
   const [selectedTopic, setSelectedTopic] = useState("");
+  const [selectionMode, setSelectionMode] = useState("");
+  const [uploadedFile, setUploadedFile] = useState(null);
 
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -114,6 +122,29 @@ function App() {
 
   const handleTopicChange = (event) => {
     setSelectedTopic(event.target.value);
+  };
+
+  const handleModeChange = (event) => {
+    setSelectionMode(event.target.value);
+    setUploadedFile(null);
+  };
+
+  const handleFileChange = (event) => {
+    const [file] = event.target.files || [];
+    setUploadedFile(file || null);
+  };
+
+  const handleUploadSubmit = (event) => {
+    event.preventDefault();
+    if (!uploadedFile) {
+      return;
+    }
+
+    // Placeholder for future upload handling logic.
+    console.log("Ready to upload", {
+      selectionMode,
+      fileName: uploadedFile.name,
+    });
   };
 
   const getDisplayName = (item, keys) => {
@@ -224,6 +255,43 @@ function App() {
           <p className="status selection" aria-live="polite">
             {selectedSummary}
           </p>
+        )}
+
+        <fieldset className="mode-selector">
+          <legend>Select Option</legend>
+          <div className="radio-options">
+            {MODE_OPTIONS.map((option) => (
+              <label key={option.value} className="radio-option">
+                <input
+                  type="radio"
+                  name="mode"
+                  value={option.value}
+                  checked={selectionMode === option.value}
+                  onChange={handleModeChange}
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        {selectionMode && (
+          <form className="upload-form" onSubmit={handleUploadSubmit}>
+            <label className="file-input" htmlFor="json-upload">
+              <span>Upload JSON file</span>
+              <input
+                id="json-upload"
+                type="file"
+                accept="application/json"
+                onChange={handleFileChange}
+              />
+              {uploadedFile && <p className="file-name">{uploadedFile.name}</p>}
+            </label>
+
+            <button type="submit" disabled={!uploadedFile}>
+              Submit
+            </button>
+          </form>
         )}
       </section>
     </main>
