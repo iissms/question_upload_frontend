@@ -4,6 +4,7 @@ const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const registerUploadCl = require("./routes/uploadCl");
 
 const app = express();
 app.use(cors()); // Enable CORS
@@ -638,6 +639,7 @@ async function processQuestionImages(question, newQuestionId) {
 const fsp = fs.promises;
 
 
+
 // ---- folder where source images live ----
 const TG_FOLDER_DIR = process.env.TG_FOLDER_DIR
   ? path.resolve(process.env.TG_FOLDER_DIR)
@@ -1170,6 +1172,9 @@ app.post("/upload/tg", async (req, res) => {
     });
   }
 });
+
+// Register custom routes
+registerUploadCl(app, { executeQuery });
 
 // Start Server
 app.listen(3089, () => {
