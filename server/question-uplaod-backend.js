@@ -258,6 +258,26 @@ async function checkQuestionExists(questionId) {
     });
 }
 
+async function checkQuestionExistsByTgId(tgId) {
+  if (!tgId) return false;
+  const results = await executeQuery(
+    "SELECT COUNT(*) AS count FROM question_id_mapping WHERE tg_id = ?",
+    [tgId]
+  );
+  const row = Array.isArray(results) ? results[0] : results;
+  return Boolean(row?.count);
+}
+
+function imageExistsInTgFolder(filename) {
+  if (!filename) return true;
+  try {
+    fs.accessSync(path.join(TG_FOLDER_DIR, filename));
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 // Function to empty the upload folder
 function emptyUploadFolder(directoryPath) {
   try {
@@ -785,28 +805,49 @@ app.get("/years", async (req, res) => {
   }
 });
 
-app.post("/upload/id", async (req, res) => {
+app.post("/upload/tg", async (req, res) => {
   const TX_BEGIN = "START TRANSACTION";
   const TX_COMMIT = "COMMIT";
   const TX_ROLLBACK = "ROLLBACK";
 
   try {
     const { mode, yearId, subjectId, chapterId, topicId, payload } = req.body || {};
-    if (mode !== "id") return res.status(400).json({ error: "Invalid mode: expected 'id'" });
+    // if (mode !== "id") return res.status(400).json({ error: "Invalid mode: expected 'id'" });
     if (!Array.isArray(payload) || payload.length === 0)
       return res.status(400).json({ error: "payload must be a non-empty array" });
 
     const errors = [];
     const skipped = [];
+    const alreadyUploaded = [];
+    const skippedMissingImages = [];
+    const duplicateInPayload = [];
     const rows = [];                 // first insert (image cols NULL), update later
     const tgIdsInOrder = [];
     const oldIntIdsInOrder = [];
     const renamePlan = [];           // per-question sources {q,o1,o2,o3,o4,s}
+    const seenTgIds = new Set();
 
     // ---- normalize / validate / skip ----
     for (const pack of payload) {
       const questions = Array.isArray(pack?.data?.questions) ? pack.data.questions : [];
       for (const q of questions) {
+        const tgId = String(q?.key ?? "").trim();
+        if (!tgId) {
+          errors.push({ key: q.key, reason: "Missing tg_id/key for duplicate check." });
+          continue;
+        }
+
+        if (seenTgIds.has(tgId)) {
+          duplicateInPayload.push({ key: q.key, tg_id: tgId, reason: "Duplicate tg_id in payload" });
+          continue;
+        }
+
+        const existsByTgId = await checkQuestionExistsByTgId(tgId);
+        if (existsByTgId) {
+          alreadyUploaded.push({ key: q.key, tg_id: tgId, reason: "Question already uploaded" });
+          continue;
+        }
+
         const qTypeCode = mapQuestionType(q.question_type);
         if (qTypeCode === null) {
           errors.push({ key: q.key, reason: `Invalid question_type '${q.question_type}'. Expected 'mcq' or 'numeric'.` });
@@ -842,6 +883,27 @@ app.post("/upload/id", async (req, res) => {
         const o2Src = basenameFromAny((opt2.images[0] || q.option2_image || (Array.isArray(q.option2_images) ? q.option2_images[0] : null)) || null);
         const o3Src = basenameFromAny((opt3.images[0] || q.option3_image || (Array.isArray(q.option3_images) ? q.option3_images[0] : null)) || null);
         const o4Src = basenameFromAny((opt4.images[0] || q.option4_image || (Array.isArray(q.option4_images) ? q.option4_images[0] : null)) || null);
+
+        const missingSources = [];
+        const sourcesToCheck = [
+          { bucket: "question", src: qSrc },
+          { bucket: "option1", src: o1Src },
+          { bucket: "option2", src: o2Src },
+          { bucket: "option3", src: o3Src },
+          { bucket: "option4", src: o4Src },
+          { bucket: "solution", src: sSrc },
+        ];
+
+        for (const item of sourcesToCheck) {
+          if (item.src && !imageExistsInTgFolder(item.src)) {
+            missingSources.push({ bucket: item.bucket, src: item.src });
+          }
+        }
+
+        if (missingSources.length > 0) {
+          skippedMissingImages.push({ key: q.key, tg_id: tgId, missing_images: missingSources });
+          continue;
+        }
 
         if (!hasContent(cleanQuestion, qSrc)) {
           errors.push({ key: q.key, reason: "Question missing (no text and no image)" });
@@ -898,6 +960,8 @@ app.post("/upload/id", async (req, res) => {
           solution_image: sSrc || null
         }, null, 2));
 
+        seenTgIds.add(tgId);
+
         // first insert (images null)
         rows.push([
           chapterId ?? null,
@@ -919,8 +983,8 @@ app.post("/upload/id", async (req, res) => {
         // remember sources for rename
         renamePlan.push({ q: qSrc, o1: o1Src, o2: o2Src, o3: o3Src, o4: o4Src, s: sSrc });
 
-        tgIdsInOrder.push(String(q.key || ""));
-        oldIntIdsInOrder.push(/^\d+$/.test(String(q.key || "")) ? Number(q.key) : null);
+        tgIdsInOrder.push(tgId);
+        oldIntIdsInOrder.push(/^\d+$/.test(tgId) ? Number(tgId) : null);
       }
     }
 
@@ -930,7 +994,10 @@ app.post("/upload/id", async (req, res) => {
         status: "error",
         message: "Validation failed. Nothing was uploaded.",
         errors,
-        skipped_due_to_images: skipped
+        skipped_due_to_images: skipped,
+        already_uploaded: alreadyUploaded,
+        skipped_due_to_missing_images: skippedMissingImages,
+        duplicate_in_payload: duplicateInPayload
       });
     }
 
@@ -938,8 +1005,17 @@ app.post("/upload/id", async (req, res) => {
       return res.json({
         status: "ok",
         message: "No questions to insert (all skipped due to ≥2 images or none provided).",
-        stats: { inserted: 0, skipped: skipped.length },
-        skipped_due_to_images: skipped
+        stats: {
+          inserted: 0,
+          skipped: skipped.length,
+          already_uploaded: alreadyUploaded.length,
+          skipped_due_to_missing_images: skippedMissingImages.length,
+          duplicate_in_payload: duplicateInPayload.length
+        },
+        skipped_due_to_images: skipped,
+        already_uploaded: alreadyUploaded,
+        skipped_due_to_missing_images: skippedMissingImages,
+        duplicate_in_payload: duplicateInPayload
       });
     }
 
@@ -1064,9 +1140,18 @@ app.post("/upload/id", async (req, res) => {
 
     return res.json({
       status: "ok",
-      message: "Questions inserted, mapped, images renamed (filenames only), and updated. Skipped any with ≥2 images.",
-      stats: { inserted: rows.length, skipped: skipped.length },
+      message: "Questions inserted, mapped, images renamed (filenames only), and updated. Skipped any with ≥2 images, duplicates, or missing source images.",
+      stats: {
+        inserted: rows.length,
+        skipped_due_to_image_limits: skipped.length,
+        already_uploaded: alreadyUploaded.length,
+        skipped_due_to_missing_images: skippedMissingImages.length,
+        duplicate_in_payload: duplicateInPayload.length
+      },
       skipped_due_to_images: skipped,
+      already_uploaded: alreadyUploaded,
+      skipped_due_to_missing_images: skippedMissingImages,
+      duplicate_in_payload: duplicateInPayload,
       id_map_preview: newIds.slice(0, 5).map((id, i) => ({ tg_id: tgIdsInOrder[i], new_id: id })),
       // >>> The only image-missing summary you asked for:
       missing_images_summary: {
@@ -1077,7 +1162,7 @@ app.post("/upload/id", async (req, res) => {
     });
   } catch (err) {
     try { await executeQuery("ROLLBACK"); } catch (_) {}
-    console.error("Error in /upload/id:", err);
+    console.error("Error in /upload/tg:", err);
     return res.status(500).json({
       status: "error",
       message: "Insert failed. All changes reverted. You can re-upload the JSON.",

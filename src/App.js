@@ -15,6 +15,60 @@ const MODE_ENDPOINTS = {
   tg: "/upload/tg",
 };
 
+const toDisplayString = (value) => {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number") return `${value}`;
+  return "";
+};
+
+const buildAlreadyUploadedSummary = (body, previewLimit = 5) => {
+  const entries = Array.isArray(body?.already_uploaded) ? body.already_uploaded : [];
+  if (entries.length === 0) return null;
+
+  const idCandidates = entries
+    .map((item) => {
+      if (typeof item === "string" || typeof item === "number") {
+        return `${item}`;
+      }
+      if (item && typeof item === "object") {
+        return toDisplayString(item.tg_id) || toDisplayString(item.key);
+      }
+      return "";
+    })
+    .filter((value) => value.length > 0);
+
+  if (idCandidates.length === 0) {
+    return `Already uploaded ${entries.length} question${entries.length === 1 ? "" : "s"}.`;
+  }
+
+  const shown = idCandidates.slice(0, previewLimit);
+  const remaining = idCandidates.length - shown.length;
+  const previewText = shown.join(", ");
+  const suffix = remaining > 0 ? `, +${remaining} more` : "";
+
+  return `Already uploaded ${entries.length} question${entries.length === 1 ? "" : "s"}: ${previewText}${suffix}.`;
+};
+
+const buildUploadErrorMessage = (status, body, fallback) => {
+  if (typeof body === "string") {
+    const trimmed = body.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+
+  const baseMessage =
+    (typeof body?.error === "string" && body.error.trim()) ||
+    (typeof body?.message === "string" && body.message.trim()) ||
+    fallback ||
+    `Upload failed with status ${status}`;
+
+  const alreadyUploadedSummary = buildAlreadyUploadedSummary(body);
+
+  return [baseMessage, alreadyUploadedSummary].filter(Boolean).join(" ");
+};
+
 const buildUrl = (path, params) => {
   const url = new URL(`${API_BASE_URL}${path}`, window.location.origin);
   if (params) {
@@ -175,6 +229,7 @@ function App() {
 
     setUploadError(null);
     setUploadSuccess(null);
+    setUploadResponse(null);
     setUploading(true);
 
     try {
@@ -213,17 +268,13 @@ function App() {
       }
 
       if (!response.ok) {
-        let message = `Upload failed with status ${response.status}`;
-        if (parsedBody) {
-          if (parsedBody?.error) {
-            message = parsedBody.error;
-          } else if (typeof parsedBody === "string") {
-            message = parsedBody;
-          }
-        } else if (responseBody) {
-          message = responseBody;
-        }
-        throw new Error(message);
+        const fallbackMessage = `Upload failed with status ${response.status}`;
+        const errorMessage = buildUploadErrorMessage(response.status, parsedBody, fallbackMessage);
+
+        setUploadError(errorMessage);
+        setUploadSuccess(null);
+        setUploadResponse(parsedBody ?? (responseBody || null));
+        return;
       }
 
       let successMessage = "Upload completed successfully.";
@@ -243,8 +294,13 @@ function App() {
       setUploadedFile(null);
       setFileInputKey((key) => key + 1);
     } catch (uploadErr) {
-      setUploadError(uploadErr.message || "Upload failed.");
-      setUploadResponse(null);
+      setUploadError(uploadErr?.message || "Upload failed.");
+      setUploadSuccess(null);
+      if (uploadErr?.body !== undefined) {
+        setUploadResponse(uploadErr.body);
+      } else {
+        setUploadResponse(null);
+      }
     } finally {
       setUploading(false);
     }
@@ -459,6 +515,51 @@ function App() {
                                 )}
                               </li>
                             ))}
+                          </ul>
+                        </div>
+                      )}
+                    {Array.isArray(uploadResponse.already_uploaded) &&
+                      uploadResponse.already_uploaded.length > 0 && (
+                        <div className="response-block">
+                          <h3>Already Uploaded</h3>
+                          <p>
+                            <span className="response-key">Total</span>
+                            <span className="response-value">
+                              {uploadResponse.already_uploaded.length}
+                            </span>
+                          </p>
+                          <ul className="nested-list">
+                            {uploadResponse.already_uploaded.map((item, index) => {
+                              if (item && typeof item === "object") {
+                                const entryKey = item.tg_id || item.key || index;
+                                return (
+                                  <li key={`already-uploaded-${entryKey}-${index}`}>
+                                    {Object.entries(item).map(([key, value]) => {
+                                      const displayValue =
+                                        toDisplayString(value) ||
+                                        (typeof value === "object" ? JSON.stringify(value, null, 2) : "");
+                                      return (
+                                        <p key={key}>
+                                          <span className="response-key">{key}</span>
+                                          <span className="response-value">
+                                            {displayValue || String(value)}
+                                          </span>
+                                        </p>
+                                      );
+                                    })}
+                                  </li>
+                                );
+                              }
+
+                              return (
+                                <li key={`already-uploaded-${index}`}>
+                                  <span className="response-value">
+                                    {toDisplayString(item) ||
+                                      (typeof item === "object" ? JSON.stringify(item, null, 2) : String(item))}
+                                  </span>
+                                </li>
+                              );
+                            })}
                           </ul>
                         </div>
                       )}
