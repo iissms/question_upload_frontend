@@ -46,19 +46,56 @@ function toNullable(value) {
   return value;
 }
 
-function resolveYearId(question) {
-  if (question == null || typeof question !== "object") return null;
-  if (question.stNcert != null) return question.stNcert;
-  if (question.ncert_id != null) return question.ncert_id;
-  if (question.year != null) return question.year;
-  return null;
+function sanitizeForeignKey(value) {
+  const id = parseId(value);
+  return id && id > 0 ? id : null;
+}
+
+function resolveClassificationId(question, contextValue, keys = []) {
+  if (question && typeof question === "object") {
+    for (const key of keys) {
+      if (key in question) {
+        const candidate = sanitizeForeignKey(question[key]);
+        if (candidate) return candidate;
+      }
+    }
+  }
+  const fallback = sanitizeForeignKey(contextValue);
+  return fallback || null;
+}
+
+function resolveYearId(question, contextValue) {
+  if (question && typeof question === "object") {
+    const candidates = [
+      question.selectedYearId,
+      question.year_id,
+      question.yearId,
+      question.year,
+      question.ncert_id,
+      question.stNcert,
+    ];
+
+    for (const value of candidates) {
+      const candidate = sanitizeForeignKey(value);
+      if (candidate) return candidate;
+    }
+  }
+
+  return sanitizeForeignKey(contextValue);
 }
 
 function pickCorrectOption(questionType, answer) {
   const normalized = toNullable(answer);
   if (normalized == null) return null;
   if (questionType === 0) {
-    const letter = LETTER_BY_INDEX[String(normalized)] || null;
+    const trimmed = String(normalized).trim();
+    if (trimmed.length === 1) {
+      const upper = trimmed.toUpperCase();
+      if (["A", "B", "C", "D"].includes(upper)) {
+        return upper;
+      }
+    }
+    const letter = LETTER_BY_INDEX[String(trimmed)] || null;
     return letter;
   }
   return String(normalized);
@@ -175,10 +212,18 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
 
     const context = {
       mode: toNullable(meta.mode ?? meta.type ?? null),
-      selectedYearId: parseId(meta.yearId ?? meta.year_id ?? meta.selectedYearId),
-      selectedSubjectId: parseId(meta.subjectId ?? meta.subject_id ?? meta.selectedSubjectId),
-      selectedChapterId: parseId(meta.chapterId ?? meta.chapter_id ?? meta.selectedChapterId),
-      selectedTopicId: parseId(meta.topicId ?? meta.topic_id ?? meta.selectedTopicId),
+      selectedYearId: sanitizeForeignKey(
+        meta.yearId ?? meta.year_id ?? meta.selectedYearId
+      ),
+      selectedSubjectId: sanitizeForeignKey(
+        meta.subjectId ?? meta.subject_id ?? meta.selectedSubjectId
+      ),
+      selectedChapterId: sanitizeForeignKey(
+        meta.chapterId ?? meta.chapter_id ?? meta.selectedChapterId
+      ),
+      selectedTopicId: sanitizeForeignKey(
+        meta.topicId ?? meta.topic_id ?? meta.selectedTopicId
+      ),
     };
 
     const inserted = [];
@@ -244,14 +289,37 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
           }
         }
 
+        const selectedChapterId = resolveClassificationId(
+          rawQuestion,
+          context.selectedChapterId,
+          ["selectedChapterId", "chapter_id", "chapterId"]
+        );
+        const selectedSubjectId = resolveClassificationId(
+          rawQuestion,
+          context.selectedSubjectId,
+          ["selectedSubjectId", "subject_id", "subjectId"]
+        );
+        const selectedTopicId = resolveClassificationId(
+          rawQuestion,
+          context.selectedTopicId,
+          ["selectedTopicId", "topic_id", "topicId"]
+        );
+        const selectedYearId = resolveYearId(rawQuestion, context.selectedYearId);
+
+        if (!selectedYearId || !selectedSubjectId || !selectedChapterId || !selectedTopicId) {
+          validationErrors.push({
+            cb_id: cbId,
+            reason:
+              "Missing required year/subject/chapter/topic metadata after applying defaults",
+          });
+          continue;
+        }
+
         const payloadForInsert = {
-          selectedChapterId:
-            rawQuestion.chapter_id ?? context.selectedChapterId ?? null,
-          selectedSubjectId:
-            rawQuestion.subject_id ?? context.selectedSubjectId ?? null,
-          selectedYearId: resolveYearId(rawQuestion) ?? context.selectedYearId ?? null,
-          selectedTopicId:
-            rawQuestion.topic_id ?? context.selectedTopicId ?? null,
+          selectedChapterId,
+          selectedSubjectId,
+          selectedYearId,
+          selectedTopicId,
           pre_question_text: toNullable(rawQuestion.question),
           option1_text: questionType === 0 ? toNullable(rawQuestion.op1) : null,
           option2_text: questionType === 0 ? toNullable(rawQuestion.op2) : null,
