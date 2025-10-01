@@ -10,6 +10,33 @@ const LETTER_BY_INDEX = {
   "4": "D",
 };
 
+function normalizeRequestBody(body) {
+  if (Array.isArray(body)) {
+    return { payload: body, meta: {} };
+  }
+
+  if (body && typeof body === "object") {
+    if (Array.isArray(body.payload)) {
+      const { payload, ...meta } = body;
+      return { payload, meta };
+    }
+
+    if (Array.isArray(body.questions)) {
+      const { questions, ...meta } = body;
+      return { payload: questions, meta };
+    }
+  }
+
+  return { payload: null, meta: {} };
+}
+
+function parseId(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string" && value.trim().length === 0) return null;
+  const coerced = Number(value);
+  return Number.isFinite(coerced) ? coerced : null;
+}
+
 function toNullable(value) {
   if (value === undefined || value === null) return null;
   if (typeof value === "string") {
@@ -139,10 +166,20 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
     : path.resolve(__dirname, "..", "cb_folder");
 
   app.post("/upload/cl", async (req, res) => {
-    const payload = Array.isArray(req.body) ? req.body : null;
+    const { payload, meta } = normalizeRequestBody(req.body);
     if (!payload || payload.length === 0) {
-      return res.status(400).json({ error: "Request body must be a non-empty array" });
+      return res
+        .status(400)
+        .json({ error: "Request must include a non-empty payload array" });
     }
+
+    const context = {
+      mode: toNullable(meta.mode ?? meta.type ?? null),
+      selectedYearId: parseId(meta.yearId ?? meta.year_id ?? meta.selectedYearId),
+      selectedSubjectId: parseId(meta.subjectId ?? meta.subject_id ?? meta.selectedSubjectId),
+      selectedChapterId: parseId(meta.chapterId ?? meta.chapter_id ?? meta.selectedChapterId),
+      selectedTopicId: parseId(meta.topicId ?? meta.topic_id ?? meta.selectedTopicId),
+    };
 
     const inserted = [];
     const duplicates = [];
@@ -208,10 +245,13 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
         }
 
         const payloadForInsert = {
-          selectedChapterId: rawQuestion.chapter_id ?? null,
-          selectedSubjectId: rawQuestion.subject_id ?? null,
-          selectedYearId: resolveYearId(rawQuestion),
-          selectedTopicId: rawQuestion.topic_id ?? null,
+          selectedChapterId:
+            rawQuestion.chapter_id ?? context.selectedChapterId ?? null,
+          selectedSubjectId:
+            rawQuestion.subject_id ?? context.selectedSubjectId ?? null,
+          selectedYearId: resolveYearId(rawQuestion) ?? context.selectedYearId ?? null,
+          selectedTopicId:
+            rawQuestion.topic_id ?? context.selectedTopicId ?? null,
           pre_question_text: toNullable(rawQuestion.question),
           option1_text: questionType === 0 ? toNullable(rawQuestion.op1) : null,
           option2_text: questionType === 0 ? toNullable(rawQuestion.op2) : null,
@@ -254,6 +294,7 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
       skipped_due_to_missing_images: skippedMissingImages,
       errors: validationErrors,
       cb_folder_dir: folderDir,
+      request_context: context,
     });
   });
 };
