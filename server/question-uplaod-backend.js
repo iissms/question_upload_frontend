@@ -995,7 +995,7 @@ app.post("/upload/id", async (req, res) => {
         message: "Validation failed. Nothing was uploaded.",
         errors,
         skipped_due_to_images: skipped,
-        already_uploaded,
+        already_uploaded: alreadyUploaded,
         skipped_due_to_missing_images: skippedMissingImages,
         duplicate_in_payload: duplicateInPayload
       });
@@ -1013,7 +1013,7 @@ app.post("/upload/id", async (req, res) => {
           duplicate_in_payload: duplicateInPayload.length
         },
         skipped_due_to_images: skipped,
-        already_uploaded,
+        already_uploaded: alreadyUploaded,
         skipped_due_to_missing_images: skippedMissingImages,
         duplicate_in_payload: duplicateInPayload
       });
@@ -1149,7 +1149,7 @@ app.post("/upload/id", async (req, res) => {
         duplicate_in_payload: duplicateInPayload.length
       },
       skipped_due_to_images: skipped,
-      already_uploaded,
+      already_uploaded: alreadyUploaded,
       skipped_due_to_missing_images: skippedMissingImages,
       duplicate_in_payload: duplicateInPayload,
       id_map_preview: newIds.slice(0, 5).map((id, i) => ({ tg_id: tgIdsInOrder[i], new_id: id })),
