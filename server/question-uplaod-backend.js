@@ -805,14 +805,14 @@ app.get("/years", async (req, res) => {
   }
 });
 
-app.post("/upload/id", async (req, res) => {
+app.post("/upload/tg", async (req, res) => {
   const TX_BEGIN = "START TRANSACTION";
   const TX_COMMIT = "COMMIT";
   const TX_ROLLBACK = "ROLLBACK";
 
   try {
     const { mode, yearId, subjectId, chapterId, topicId, payload } = req.body || {};
-    if (mode !== "id") return res.status(400).json({ error: "Invalid mode: expected 'id'" });
+    // if (mode !== "id") return res.status(400).json({ error: "Invalid mode: expected 'id'" });
     if (!Array.isArray(payload) || payload.length === 0)
       return res.status(400).json({ error: "payload must be a non-empty array" });
 
@@ -1162,7 +1162,7 @@ app.post("/upload/id", async (req, res) => {
     });
   } catch (err) {
     try { await executeQuery("ROLLBACK"); } catch (_) {}
-    console.error("Error in /upload/id:", err);
+    console.error("Error in /upload/tg:", err);
     return res.status(500).json({
       status: "error",
       message: "Insert failed. All changes reverted. You can re-upload the JSON.",
