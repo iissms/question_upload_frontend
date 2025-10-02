@@ -855,6 +855,7 @@ app.post("/upload/tg", async (req, res) => {
     const alreadyUploaded = [];
     const skippedMissingImages = [];
     const duplicateInPayload = [];
+    const skippedNumericMissingAnswer = [];
     const skippedMultipleAnswers = [];
     const rows = [];                 // first insert (image cols NULL), update later
     const tgIdsInOrder = [];
@@ -975,7 +976,10 @@ app.post("/upload/tg", async (req, res) => {
           }
         } else {
           answerOut = stripHtmlKeepText(answers[0]);
-          if (!answerOut) { errors.push({ key: q.key, reason: "Numeric question requires a numeric/text answer" }); continue; }
+          if (!answerOut) {
+            skippedNumericMissingAnswer.push({ key: q.key, tg_id: tgId, reason: "Numeric question requires a numeric/text answer" });
+            continue;
+          }
         }
 
         // terminal preview
@@ -1036,7 +1040,8 @@ app.post("/upload/tg", async (req, res) => {
         already_uploaded: alreadyUploaded,
         skipped_due_to_missing_images: skippedMissingImages,
         duplicate_in_payload: duplicateInPayload,
-        skipped_due_to_multiple_answers: skippedMultipleAnswers
+        skipped_due_to_multiple_answers: skippedMultipleAnswers,
+        skipped_numeric_missing_answer: skippedNumericMissingAnswer
       });
     }
 
@@ -1050,13 +1055,15 @@ app.post("/upload/tg", async (req, res) => {
           already_uploaded: alreadyUploaded.length,
           skipped_due_to_missing_images: skippedMissingImages.length,
           duplicate_in_payload: duplicateInPayload.length,
-          skipped_due_to_multiple_answers: skippedMultipleAnswers.length
+          skipped_due_to_multiple_answers: skippedMultipleAnswers.length,
+          skipped_numeric_missing_answer: skippedNumericMissingAnswer.length
         },
         skipped_due_to_images: skipped,
         already_uploaded: alreadyUploaded,
         skipped_due_to_missing_images: skippedMissingImages,
         duplicate_in_payload: duplicateInPayload,
-        skipped_due_to_multiple_answers: skippedMultipleAnswers
+        skipped_due_to_multiple_answers: skippedMultipleAnswers,
+        skipped_numeric_missing_answer: skippedNumericMissingAnswer
       });
     }
 
@@ -1188,13 +1195,15 @@ app.post("/upload/tg", async (req, res) => {
         already_uploaded: alreadyUploaded.length,
         skipped_due_to_missing_images: skippedMissingImages.length,
         duplicate_in_payload: duplicateInPayload.length,
-        skipped_due_to_multiple_answers: skippedMultipleAnswers.length
+        skipped_due_to_multiple_answers: skippedMultipleAnswers.length,
+        skipped_numeric_missing_answer: skippedNumericMissingAnswer.length
       },
       skipped_due_to_images: skipped,
       already_uploaded: alreadyUploaded,
       skipped_due_to_missing_images: skippedMissingImages,
       duplicate_in_payload: duplicateInPayload,
       skipped_due_to_multiple_answers: skippedMultipleAnswers,
+      skipped_numeric_missing_answer: skippedNumericMissingAnswer,
       id_map_preview: newIds.slice(0, 5).map((id, i) => ({ tg_id: tgIdsInOrder[i], new_id: id })),
       // >>> The only image-missing summary you asked for:
       missing_images_summary: {
