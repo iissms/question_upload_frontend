@@ -4,6 +4,7 @@ const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const axios = require("axios");
 const registerUploadCl = require("./routes/uploadCl");
 
 const app = express();
@@ -638,6 +639,36 @@ async function processQuestionImages(question, newQuestionId) {
 
 const fsp = fs.promises;
 
+const REMOTE_UPLOAD_URL =
+  process.env.REMOTE_UPLOAD_URL || "http://93.127.185.147:3051/upload";
+const EXTENSION_MIME_MAP = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".bmp": "image/bmp",
+  ".webp": "image/webp"
+};
+
+async function uploadFileToRemote(filePath, fileName) {
+  try {
+    const buffer = await fsp.readFile(filePath);
+    const ext = path.extname(fileName).toLowerCase();
+    const mimeType = EXTENSION_MIME_MAP[ext] || "application/octet-stream";
+    const dataUri = `data:${mimeType};base64,${buffer.toString("base64")}`;
+    await axios.post(REMOTE_UPLOAD_URL, {
+      base64: dataUri,
+      filename: fileName
+    });
+    console.log(`[upload/id] Uploaded ${fileName} to remote server`);
+  } catch (err) {
+    console.error(
+      `[upload/id] Remote upload failed for ${fileName}:`,
+      err?.message || err
+    );
+  }
+}
+
 
 
 // ---- folder where source images live ----
@@ -778,6 +809,7 @@ async function tryRenameFromTgFolder(srcName, dstName, tgId, newId, bucket, miss
         throw e;
       }
     }
+    await uploadFileToRemote(dst, dstName);
     return { name: dstName, found: true };
   } catch (e) {
     console.warn(`[upload/id] Source image not found; keeping name only: ${srcName} -> ${dstName}`);
