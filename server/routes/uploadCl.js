@@ -46,11 +46,14 @@ function toNullable(value) {
   return value;
 }
 
+// Coerce to positive INTEGER id (e.g., "9" -> 9, "27.0" -> 27)
 function sanitizeForeignKey(value) {
-  const id = parseId(value);
-  return id && id > 0 ? id : null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.trunc(n);
 }
 
+// Keep, but we'll no longer use it for IDs
 function resolveClassificationId(question, contextValue, keys = []) {
   if (question && typeof question === "object") {
     for (const key of keys) {
@@ -64,6 +67,7 @@ function resolveClassificationId(question, contextValue, keys = []) {
   return fallback || null;
 }
 
+// Keep, but we'll no longer use it for IDs
 function resolveYearId(question, contextValue) {
   if (question && typeof question === "object") {
     const candidates = [
@@ -74,13 +78,11 @@ function resolveYearId(question, contextValue) {
       question.ncert_id,
       question.stNcert,
     ];
-
     for (const value of candidates) {
       const candidate = sanitizeForeignKey(value);
       if (candidate) return candidate;
     }
   }
-
   return sanitizeForeignKey(contextValue);
 }
 
@@ -202,7 +204,7 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
     ? path.resolve(cbFolderDir)
     : path.resolve(__dirname, "..", "cb_folder");
 
-  app.post("/upload/cl", async (req, res) => {
+  app.post("/upload/cb", async (req, res) => {
     const { payload, meta } = normalizeRequestBody(req.body);
     if (!payload || payload.length === 0) {
       return res
@@ -210,20 +212,13 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
         .json({ error: "Request must include a non-empty payload array" });
     }
 
+    // Meta → positive integers only
     const context = {
       mode: toNullable(meta.mode ?? meta.type ?? null),
-      selectedYearId: sanitizeForeignKey(
-        meta.yearId ?? meta.year_id ?? meta.selectedYearId
-      ),
-      selectedSubjectId: sanitizeForeignKey(
-        meta.subjectId ?? meta.subject_id ?? meta.selectedSubjectId
-      ),
-      selectedChapterId: sanitizeForeignKey(
-        meta.chapterId ?? meta.chapter_id ?? meta.selectedChapterId
-      ),
-      selectedTopicId: sanitizeForeignKey(
-        meta.topicId ?? meta.topic_id ?? meta.selectedTopicId
-      ),
+      selectedYearId: sanitizeForeignKey(meta.yearId ?? meta.year_id ?? meta.selectedYearId),
+      selectedSubjectId: sanitizeForeignKey(meta.subjectId ?? meta.subject_id ?? meta.selectedSubjectId),
+      selectedChapterId: sanitizeForeignKey(meta.chapterId ?? meta.chapter_id ?? meta.selectedChapterId),
+      selectedTopicId: sanitizeForeignKey(meta.topicId ?? meta.topic_id ?? meta.selectedTopicId),
     };
 
     const inserted = [];
@@ -255,12 +250,12 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
           validationErrors.push({ cb_id: cbId, reason: "Invalid correct option for MCQ" });
           continue;
         }
-
-        if (questionType === 1 && (!correctOption || correctOption.trim().length === 0)) {
+        if (questionType === 1 && (!correctOption || String(correctOption).trim().length === 0)) {
           validationErrors.push({ cb_id: cbId, reason: "Numeric question requires an answer" });
           continue;
         }
 
+        // image existence check
         const images = extractImageNames(rawQuestion);
         const missing = [];
         for (const [bucket, fileName] of Object.entries(images)) {
@@ -270,12 +265,12 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
             missing.push({ bucket, file: fileName });
           }
         }
-
         if (missing.length > 0) {
           skippedMissingImages.push({ cb_id: cbId, missing_images: missing });
           continue;
         }
 
+        // MCQ options presence (text or image)
         if (questionType === 0) {
           const optionPairs = [
             { text: toNullable(rawQuestion.op1), image: images.option1 },
@@ -289,31 +284,28 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
           }
         }
 
-        const selectedChapterId = resolveClassificationId(
-          rawQuestion,
-          context.selectedChapterId,
-          ["selectedChapterId", "chapter_id", "chapterId"]
-        );
-        const selectedSubjectId = resolveClassificationId(
-          rawQuestion,
-          context.selectedSubjectId,
-          ["selectedSubjectId", "subject_id", "subjectId"]
-        );
-        const selectedTopicId = resolveClassificationId(
-          rawQuestion,
-          context.selectedTopicId,
-          ["selectedTopicId", "topic_id", "topicId"]
-        );
-        const selectedYearId = resolveYearId(rawQuestion, context.selectedYearId);
+        // ====== Meta-only taxonomy (DO NOT read from row) ======
+        const selectedYearId = context.selectedYearId;
+        const selectedSubjectId = context.selectedSubjectId;
+        const selectedChapterId = context.selectedChapterId;
+        const selectedTopicId = context.selectedTopicId;
 
         if (!selectedYearId || !selectedSubjectId || !selectedChapterId || !selectedTopicId) {
           validationErrors.push({
             cb_id: cbId,
-            reason:
-              "Missing required year/subject/chapter/topic metadata after applying defaults",
+            reason: "Missing required year/subject/chapter/topic metadata from meta",
           });
           continue;
         }
+
+        // (Optional) Belt-and-suspenders: nuke conflicting row fields in case of accidental spreads
+        // delete rawQuestion.year;
+        // delete rawQuestion.ncert_id;
+        // delete rawQuestion.stNcert;
+        // delete rawQuestion.selectedYearId;
+        // delete rawQuestion.subject_id;
+        // delete rawQuestion.chapter_id;
+        // delete rawQuestion.topic_id;
 
         const payloadForInsert = {
           selectedChapterId,
@@ -336,6 +328,15 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
           question_type: questionType,
           verified_status: "not_verified",
         };
+
+        // Debug the final IDs you're inserting with
+        console.debug("INSERT question IDs", {
+          cbId,
+          selectedYearId,
+          selectedSubjectId,
+          selectedChapterId,
+          selectedTopicId,
+        });
 
         const newQuestionId = await insertQuestion(executeQuery, payloadForInsert);
         await insertMapping(executeQuery, cbId, newQuestionId);
