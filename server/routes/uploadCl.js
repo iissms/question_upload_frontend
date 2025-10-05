@@ -37,6 +37,17 @@ const PREVIOUS_PAPER_MAPPING = {
   "2025 - NEET": 138,
 };
 
+const FALLBACK_SUFFIX_BY_BUCKET = {
+  question: "supporting_picture",
+  explanation: "explanation_img",
+  option1: "op1_img",
+  option2: "op2_img",
+  option3: "op3_img",
+  option4: "op4_img",
+};
+
+const SUPPORTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
+
 function normalizeRequestBody(body) {
   if (Array.isArray(body)) {
     return { payload: body, meta: {} };
@@ -145,6 +156,22 @@ function computeQuestionType(rawType) {
   return Number(rawType) === 5 ? 1 : 0;
 }
 
+function isRemoteUrl(value) {
+  if (typeof value !== "string") return false;
+  return value.startsWith("http://") || value.startsWith("https://");
+}
+
+function extractFileNameFromUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/");
+    const candidate = parts[parts.length - 1];
+    return candidate && candidate.length > 0 ? candidate : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
 function deriveDifficulty(levelId) {
   const normalized = toNullable(levelId);
   if (normalized == null) return null;
@@ -162,6 +189,44 @@ function derivePreviousPapers(year, otherCet) {
   const key = `${yearPart} - ${examPart}`;
   const mapped = PREVIOUS_PAPER_MAPPING[key];
   return mapped != null ? [mapped] : null;
+}
+
+function resolveImageFileName(cbId, bucket, providedFileName, folderDir) {
+  const suffix = FALLBACK_SUFFIX_BY_BUCKET[bucket];
+  const derivedCandidates = [];
+
+  if (cbId != null && suffix) {
+    for (const ext of SUPPORTED_IMAGE_EXTENSIONS) {
+      derivedCandidates.push(`${cbId}_${suffix}${ext}`);
+    }
+  }
+
+  for (const candidate of derivedCandidates) {
+    const fullPath = path.join(folderDir, candidate);
+    if (fs.existsSync(fullPath)) {
+      return { resolvedName: candidate, exists: true };
+    }
+  }
+
+  if (derivedCandidates.length > 0) {
+    return { resolvedName: derivedCandidates[0], exists: false };
+  }
+
+  if (providedFileName && !isRemoteUrl(providedFileName)) {
+    const candidate = providedFileName;
+    const fullPath = path.join(folderDir, candidate);
+    return { resolvedName: candidate, exists: fs.existsSync(fullPath) };
+  }
+
+  if (providedFileName && isRemoteUrl(providedFileName)) {
+    const fromUrl = extractFileNameFromUrl(providedFileName);
+    if (fromUrl) {
+      const fullPath = path.join(folderDir, fromUrl);
+      return { resolvedName: fromUrl, exists: fs.existsSync(fullPath) };
+    }
+  }
+
+  return { resolvedName: null, exists: false };
 }
 
 async function questionExistsByCbId(executeQuery, cbId) {
@@ -252,7 +317,7 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
 
   const folderDir = cbFolderDir
     ? path.resolve(cbFolderDir)
-    : path.resolve(__dirname, "..", "cb_folder");
+    : path.resolve(__dirname, "cb_folder");
 
   app.post("/upload/cb", async (req, res) => {
     const { payload, meta } = normalizeRequestBody(req.body);
@@ -312,13 +377,34 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
         }
 
         // image existence check
-        const images = extractImageNames(rawQuestion);
+        const rawImages = extractImageNames(rawQuestion);
+        const images = {};
         const missing = [];
-        for (const [bucket, fileName] of Object.entries(images)) {
-          if (!fileName) continue;
-          const fullPath = path.join(folderDir, fileName);
-          if (!fs.existsSync(fullPath)) {
-            missing.push({ bucket, file: fileName });
+        for (const [bucket, providedFileName] of Object.entries(rawImages)) {
+          if (!providedFileName) {
+            images[bucket] = null;
+            continue;
+          }
+
+          const { resolvedName, exists } = resolveImageFileName(
+            cbId,
+            bucket,
+            providedFileName,
+            folderDir
+          );
+
+          images[bucket] = resolvedName;
+          const reportedFile = resolvedName || providedFileName;
+
+          if (exists) {
+            console.log(
+              `Question ${cbId}: image '${reportedFile}' for '${bucket}' exists in cb_folder`
+            );
+          } else {
+            missing.push({ bucket, file: reportedFile });
+            console.warn(
+              `Question ${cbId}: image '${reportedFile}' for '${bucket}' missing in cb_folder`
+            );
           }
         }
         if (missing.length > 0) {
