@@ -10,6 +10,33 @@ const LETTER_BY_INDEX = {
   "4": "D",
 };
 
+const DIFFICULTY_BY_LEVEL = {
+  1: "low",
+  2: "medium",
+  3: "medium",
+  4: "high",
+};
+
+const PREVIOUS_PAPER_MAPPING = {
+  "2023 - JEE": 131,
+  "2023 - Jee": 131,
+  "2023 - KCET": 133,
+  "2023 - KECT": 133,
+  "2023 - NEET": 132,
+  "2023 - TS EAMCET": 146,
+  "2023 - TSEAMCET": 149,
+  "2024 - JEE": 134,
+  "2024 - JEE Main": 134,
+  "2024 - KCET": 136,
+  "2024 - NEET": 135,
+  "2024 - TS EAMCET": 147,
+  "2024 - TSEAMCET": 150,
+  "2025 - JEE": 137,
+  "2025 - JEE Main": 137,
+  "2025 - KCET": 139,
+  "2025 - NEET": 138,
+};
+
 function normalizeRequestBody(body) {
   if (Array.isArray(body)) {
     return { payload: body, meta: {} };
@@ -118,6 +145,25 @@ function computeQuestionType(rawType) {
   return Number(rawType) === 5 ? 1 : 0;
 }
 
+function deriveDifficulty(levelId) {
+  const normalized = toNullable(levelId);
+  if (normalized == null) return null;
+  const numeric = Number(normalized);
+  if (!Number.isFinite(numeric)) return null;
+  return DIFFICULTY_BY_LEVEL[numeric] || null;
+}
+
+function derivePreviousPapers(year, otherCet) {
+  const normalizedYear = toNullable(year);
+  const normalizedExam = toNullable(otherCet);
+  if (normalizedYear == null || normalizedExam == null) return null;
+  const yearPart = typeof normalizedYear === "string" ? normalizedYear : String(normalizedYear);
+  const examPart = typeof normalizedExam === "string" ? normalizedExam : String(normalizedExam);
+  const key = `${yearPart} - ${examPart}`;
+  const mapped = PREVIOUS_PAPER_MAPPING[key];
+  return mapped != null ? [mapped] : null;
+}
+
 async function questionExistsByCbId(executeQuery, cbId) {
   if (!cbId && cbId !== 0) return false;
   const sql = "SELECT COUNT(*) AS count FROM question_id_mapping WHERE cb_id = ?";
@@ -147,8 +193,10 @@ async function insertQuestion(executeQuery, question) {
       option4_image_url,
       explanation_image_url,
       question_type,
-      verified_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      verified_status,
+      difficulty_level,
+      previousPapers
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const params = [
@@ -171,6 +219,8 @@ async function insertQuestion(executeQuery, question) {
     question.explanation_image_url,
     question.question_type,
     question.verified_status,
+    question.difficulty_level,
+    question.previousPapers,
   ];
 
   const result = await executeQuery(sql, params);
@@ -242,6 +292,12 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
           duplicates.push({ cb_id: cbId, reason: "Question already uploaded" });
           continue;
         }
+
+        const difficultyLevel = deriveDifficulty(rawQuestion.level_id);
+        const previousPapers = derivePreviousPapers(
+          rawQuestion.year,
+          rawQuestion.other_cet
+        );
 
         const questionType = computeQuestionType(rawQuestion.qtype_id);
         const correctOption = pickCorrectOption(questionType, rawQuestion.answer);
@@ -327,6 +383,8 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
           explanation_image_url: images.explanation,
           question_type: questionType,
           verified_status: "not_verified",
+          difficulty_level: difficultyLevel,
+          previousPapers: previousPapers ? JSON.stringify(previousPapers) : null,
         };
 
         // Debug the final IDs you're inserting with
