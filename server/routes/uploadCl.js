@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const axios = require("axios");
 
 const LETTER_BY_INDEX = {
   "1": "A",
@@ -47,6 +48,20 @@ const FALLBACK_SUFFIX_BY_BUCKET = {
 };
 
 const SUPPORTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
+
+const REMOTE_UPLOAD_URL =
+  process.env.REMOTE_UPLOAD_URL || "http://93.127.185.147:3051/upload";
+
+const fsp = fs.promises;
+
+const EXTENSION_MIME_MAP = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".bmp": "image/bmp",
+  ".webp": "image/webp",
+};
 
 function normalizeRequestBody(body) {
   if (Array.isArray(body)) {
@@ -229,6 +244,34 @@ function resolveImageFileName(cbId, bucket, providedFileName, folderDir) {
   return { resolvedName: null, exists: false };
 }
 
+async function uploadFileToRemote(filePath, fileName) {
+  try {
+    const buffer = await fsp.readFile(filePath);
+    const ext = path.extname(fileName).toLowerCase();
+    const mimeType = EXTENSION_MIME_MAP[ext] || "application/octet-stream";
+    const dataUri = `data:${mimeType};base64,${buffer.toString("base64")}`;
+    await axios.post(REMOTE_UPLOAD_URL, {
+      base64: dataUri,
+      filename: fileName,
+    });
+    console.log(`[upload/cb] Uploaded ${fileName} to remote server`);
+  } catch (err) {
+    console.error(
+      `[upload/cb] Remote upload failed for ${fileName}:`,
+      err?.message || err
+    );
+    throw err;
+  }
+}
+
+async function uploadResolvedImagesToRemote(folderDir, images) {
+  for (const fileName of Object.values(images)) {
+    if (!fileName) continue;
+    const fullPath = path.join(folderDir, fileName);
+    await uploadFileToRemote(fullPath, fileName);
+  }
+}
+
 async function questionExistsByCbId(executeQuery, cbId) {
   if (!cbId && cbId !== 0) return false;
   const sql = "SELECT COUNT(*) AS count FROM question_id_mapping WHERE cb_id = ?";
@@ -409,6 +452,16 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
         }
         if (missing.length > 0) {
           skippedMissingImages.push({ cb_id: cbId, missing_images: missing });
+          continue;
+        }
+
+        try {
+          await uploadResolvedImagesToRemote(folderDir, images);
+        } catch (error) {
+          validationErrors.push({
+            cb_id: cbId,
+            reason: `Remote upload failed: ${error?.message || error}`,
+          });
           continue;
         }
 
