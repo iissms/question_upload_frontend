@@ -703,6 +703,25 @@ function extractAndRemoveImages(text) {
   s = s.replace(IMG_MD_RE,   (_m, url) => (urls.push(url), ""));
   return { text: s.trim(), images: urls };
 }
+function collectImageRefs(...values) {
+  const out = [];
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        if (typeof entry === "string" && entry.trim()) out.push(entry.trim());
+      }
+      continue;
+    }
+    if (typeof value === "string" && value.trim()) {
+      out.push(value.trim());
+    }
+  }
+  return out;
+}
+function firstImageFrom(...values) {
+  const refs = collectImageRefs(...values);
+  return refs.length > 0 ? refs[0] : null;
+}
 function stripHtmlKeepText(s = "") {
   return s
     .replace(/<br\s*\/?>/gi, " ")
@@ -738,14 +757,12 @@ function buildPlaceholders(rowCount, colsPerRow) {
 }
 function countQuestionBucketOriginal(q) {
   let total = countImgsInText(q?.question || "");
-  const qi = q?.question_images;
-  if (Array.isArray(qi)) total += qi.filter(x => typeof x === "string" && x.trim()).length;
+  total += collectImageRefs(q?.question_images, q?.question_image).length;
   return total;
 }
 function countSolutionBucketOriginal(q) {
   let total = countImgsInText(q?.solution || "");
-  const si = q?.solution_images;
-  if (Array.isArray(si)) total += si.filter(x => typeof x === "string" && x.trim()).length;
+  total += collectImageRefs(q?.solution_images, q?.solution_image).length;
   return total;
 }
 function countOptionsBucketOriginal(q) {
@@ -753,10 +770,7 @@ function countOptionsBucketOriginal(q) {
   let maxInOne = 0;
   for (const name of names) {
     let c = countImgsInText(q?.[name] || "");
-    const single = q?.[`${name}_image`];
-    if (typeof single === "string" && single.trim()) c += 1;
-    const many = q?.[`${name}_images`];
-    if (Array.isArray(many)) c += many.filter(x => typeof x === "string" && x.trim()).length;
+    c += collectImageRefs(q?.[`${name}_image`], q?.[`${name}_images`]).length;
     maxInOne = Math.max(maxInOne, c);
   }
   return maxInOne;
@@ -893,10 +907,10 @@ app.post("/upload/tg", async (req, res) => {
         const qImgs = countQuestionBucketOriginal(q);
         const sImgs = countSolutionBucketOriginal(q);
         const oImgs = countOptionsBucketOriginal(q);
-        if (qImgs >= 2 || sImgs >= 2 || oImgs >= 2) {
+        if (qImgs > 2 || sImgs > 2 || oImgs > 2) {
           skipped.push({
             key: q.key,
-            reason: ">=2 images in bucket",
+            reason: ">2 images in bucket",
             buckets: { question_imgs: qImgs, options_max_in_one: oImgs, solution_imgs: sImgs }
           });
           continue;
@@ -916,12 +930,12 @@ app.post("/upload/tg", async (req, res) => {
         const opt3 = extractAndRemoveImages(q.option3);
         const opt4 = extractAndRemoveImages(q.option4);
 
-        const qSrc  = basenameFromAny((qImgsFound[0] || (Array.isArray(q.question_images) ? q.question_images[0] : null)) || null);
-        const sSrc  = basenameFromAny((sImgsFound[0] || (Array.isArray(q.solution_images) ? q.solution_images[0] : null)) || null);
-        const o1Src = basenameFromAny((opt1.images[0] || q.option1_image || (Array.isArray(q.option1_images) ? q.option1_images[0] : null)) || null);
-        const o2Src = basenameFromAny((opt2.images[0] || q.option2_image || (Array.isArray(q.option2_images) ? q.option2_images[0] : null)) || null);
-        const o3Src = basenameFromAny((opt3.images[0] || q.option3_image || (Array.isArray(q.option3_images) ? q.option3_images[0] : null)) || null);
-        const o4Src = basenameFromAny((opt4.images[0] || q.option4_image || (Array.isArray(q.option4_images) ? q.option4_images[0] : null)) || null);
+        const qSrc  = basenameFromAny(firstImageFrom(qImgsFound, q.question_images, q.question_image));
+        const sSrc  = basenameFromAny(firstImageFrom(sImgsFound, q.solution_images, q.solution_image));
+        const o1Src = basenameFromAny(firstImageFrom(opt1.images, q.option1_image, q.option1_images));
+        const o2Src = basenameFromAny(firstImageFrom(opt2.images, q.option2_image, q.option2_images));
+        const o3Src = basenameFromAny(firstImageFrom(opt3.images, q.option3_image, q.option3_images));
+        const o4Src = basenameFromAny(firstImageFrom(opt4.images, q.option4_image, q.option4_images));
 
         const missingSources = [];
         const sourcesToCheck = [
@@ -1048,7 +1062,7 @@ app.post("/upload/tg", async (req, res) => {
     if (rows.length === 0) {
       return res.json({
         status: "ok",
-        message: "No questions to insert (all skipped due to ≥2 images or none provided).",
+        message: "No questions to insert (all skipped due to >2 images or none provided).",
         stats: {
           inserted: 0,
           skipped: skipped.length,
@@ -1188,7 +1202,7 @@ app.post("/upload/tg", async (req, res) => {
 
     return res.json({
       status: "ok",
-      message: "Questions inserted, mapped, images renamed (filenames only), and updated. Skipped any with ≥2 images, duplicates, or missing source images.",
+      message: "Questions inserted, mapped, images renamed (filenames only), and updated. Skipped any with >2 images, duplicates, or missing source images.",
       stats: {
         inserted: rows.length,
         skipped_due_to_image_limits: skipped.length,
