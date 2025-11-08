@@ -4,8 +4,13 @@ const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const axios = require("axios");
 const registerUploadCl = require("./routes/uploadCl");
+const {
+  CDN_ALLOWED_IP,
+  getCleanClientIp,
+  saveBase64ToCdn,
+  saveFileToCdn
+} = require("./utils/cdnUploader");
 
 const app = express();
 app.use(cors()); // Enable CORS
@@ -60,6 +65,30 @@ const upload = multer({
       cb(new Error("Only .json files are allowed!"), false);
     }
   },
+});
+
+const enforceCdnIp = (req, res, next) => {
+  const cleanIp = getCleanClientIp(req);
+  if (!CDN_ALLOWED_IP || cleanIp === CDN_ALLOWED_IP) {
+    return next();
+  }
+  return res.status(403).json({ error: "Access denied: Invalid IP." });
+};
+
+app.post("/cdn/upload", enforceCdnIp, async (req, res) => {
+  const { base64, filename } = req.body || {};
+
+  if (!base64 || !filename) {
+    return res.status(400).json({ error: "Missing base64 or filename." });
+  }
+
+  try {
+    const savePath = await saveBase64ToCdn(base64, filename);
+    return res.status(200).json({ message: "File saved successfully.", path: savePath });
+  } catch (error) {
+    console.error("CDN upload error:", error);
+    return res.status(500).json({ error: "Failed to save file." });
+  }
 });
 
 // ✅ Upload API
@@ -639,31 +668,13 @@ async function processQuestionImages(question, newQuestionId) {
 
 const fsp = fs.promises;
 
-const REMOTE_UPLOAD_URL =
-  process.env.REMOTE_UPLOAD_URL || "http://93.127.185.147:3051/upload";
-const EXTENSION_MIME_MAP = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".bmp": "image/bmp",
-  ".webp": "image/webp"
-};
-
 async function uploadFileToRemote(filePath, fileName) {
   try {
-    const buffer = await fsp.readFile(filePath);
-    const ext = path.extname(fileName).toLowerCase();
-    const mimeType = EXTENSION_MIME_MAP[ext] || "application/octet-stream";
-    const dataUri = `data:${mimeType};base64,${buffer.toString("base64")}`;
-    await axios.post(REMOTE_UPLOAD_URL, {
-      base64: dataUri,
-      filename: fileName
-    });
-    console.log(`[upload/id] Uploaded ${fileName} to remote server`);
+    const savedPath = await saveFileToCdn(filePath, fileName);
+    console.log(`[upload/id] Saved ${fileName} to CDN directory at ${savedPath}`);
   } catch (err) {
     console.error(
-      `[upload/id] Remote upload failed for ${fileName}:`,
+      `[upload/id] CDN save failed for ${fileName}:`,
       err?.message || err
     );
   }
@@ -1241,6 +1252,6 @@ app.post("/upload/tg", async (req, res) => {
 registerUploadCl(app, { executeQuery });
 
 // Start Server
-app.listen(3089, () => {
+app.listen(3090, () => {
   console.log("Server running on port 3000");
 });

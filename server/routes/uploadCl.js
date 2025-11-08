@@ -2,7 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const axios = require("axios");
+const { saveFileToCdn } = require("../utils/cdnUploader");
 
 const LETTER_BY_INDEX = {
   "1": "A",
@@ -48,20 +48,6 @@ const FALLBACK_SUFFIX_BY_BUCKET = {
 };
 
 const SUPPORTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
-
-const REMOTE_UPLOAD_URL =
-  process.env.REMOTE_UPLOAD_URL || "http://93.127.185.147:3051/upload";
-
-const fsp = fs.promises;
-
-const EXTENSION_MIME_MAP = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".bmp": "image/bmp",
-  ".webp": "image/webp",
-};
 
 function normalizeRequestBody(body) {
   if (Array.isArray(body)) {
@@ -246,18 +232,11 @@ function resolveImageFileName(cbId, bucket, providedFileName, folderDir) {
 
 async function uploadFileToRemote(filePath, fileName) {
   try {
-    const buffer = await fsp.readFile(filePath);
-    const ext = path.extname(fileName).toLowerCase();
-    const mimeType = EXTENSION_MIME_MAP[ext] || "application/octet-stream";
-    const dataUri = `data:${mimeType};base64,${buffer.toString("base64")}`;
-    await axios.post(REMOTE_UPLOAD_URL, {
-      base64: dataUri,
-      filename: fileName,
-    });
-    console.log(`[upload/cb] Uploaded ${fileName} to remote server`);
+    const savedPath = await saveFileToCdn(filePath, fileName);
+    console.log(`[upload/cb] Saved ${fileName} to CDN directory at ${savedPath}`);
   } catch (err) {
     console.error(
-      `[upload/cb] Remote upload failed for ${fileName}:`,
+      `[upload/cb] CDN save failed for ${fileName}:`,
       err?.message || err
     );
     throw err;
