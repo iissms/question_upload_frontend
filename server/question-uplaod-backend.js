@@ -33,7 +33,7 @@ const db = mysql.createPool({
    host: "194.238.23.60", // Database host
   user: "lohith_pc", // Database username
   password: "lohith_pc", // Database password
-  database: "test_examtech", // Database name
+  database: "examtech", // Database name
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
