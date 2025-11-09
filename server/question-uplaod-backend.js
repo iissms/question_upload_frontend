@@ -5,6 +5,7 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const registerUploadCl = require("./routes/uploadCl");
+const registerUploadId = require("./routes/uploadId");
 const {
   CDN_ALLOWED_IP,
   getCleanClientIp,
@@ -32,7 +33,7 @@ const db = mysql.createPool({
    host: "194.238.23.60", // Database host
   user: "lohith_pc", // Database username
   password: "lohith_pc", // Database password
-  database: "examtech", // Database name
+  database: "test_examtech", // Database name
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
@@ -1250,6 +1251,7 @@ app.post("/upload/tg", async (req, res) => {
 
 // Register custom routes
 registerUploadCl(app, { executeQuery });
+registerUploadId(app, { executeQuery });
 
 // Start Server
 app.listen(3090, () => {

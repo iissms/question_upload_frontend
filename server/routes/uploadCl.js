@@ -192,6 +192,15 @@ function derivePreviousPapers(year, otherCet) {
   return mapped != null ? [mapped] : null;
 }
 
+function buildQuestionText(question, col1, col2) {
+  const formattedCol1 = toNullable(col1) ? `<b>Assertion:</b> ${toNullable(col1)}` : null;
+  const formattedCol2 = toNullable(col2) ? `<b>Reason:</b> ${toNullable(col2)}` : null;
+  const segments = [toNullable(question), formattedCol1, formattedCol2].filter(
+    (segment) => segment != null
+  );
+  return segments.length > 0 ? segments.join("<br>") : null;
+}
+
 function resolveImageFileName(cbId, bucket, providedFileName, folderDir) {
   const suffix = FALLBACK_SUFFIX_BY_BUCKET[bucket];
   const derivedCandidates = [];
@@ -230,10 +239,29 @@ function resolveImageFileName(cbId, bucket, providedFileName, folderDir) {
   return { resolvedName: null, exists: false };
 }
 
+const IMAGE_COLUMN_BY_BUCKET = {
+  question: "question_image_url",
+  option1: "option1_image_url",
+  option2: "option2_image_url",
+  option3: "option3_image_url",
+  option4: "option4_image_url",
+  explanation: "explanation_image_url",
+};
+
+const IMAGE_TYPE_SUFFIX = {
+  question_image_url: "supporting_picture",
+  option1_image_url: "image_option_1",
+  option2_image_url: "image_option_2",
+  option3_image_url: "image_option_3",
+  option4_image_url: "image_option_4",
+  explanation_image_url: "solution_supporting_picture",
+};
+
 async function uploadFileToRemote(filePath, fileName) {
   try {
     const savedPath = await saveFileToCdn(filePath, fileName);
     console.log(`[upload/cb] Saved ${fileName} to CDN directory at ${savedPath}`);
+    return savedPath || null;
   } catch (err) {
     console.error(
       `[upload/cb] CDN save failed for ${fileName}:`,
@@ -243,12 +271,37 @@ async function uploadFileToRemote(filePath, fileName) {
   }
 }
 
-async function uploadResolvedImagesToRemote(folderDir, images) {
-  for (const fileName of Object.values(images)) {
+function deriveNewImageName(questionId, columnKey, sourceName) {
+  const suffix = IMAGE_TYPE_SUFFIX[columnKey];
+  if (!suffix) return null;
+  const ext = path.extname(sourceName || "") || ".png";
+  return `${questionId}_${suffix}${ext}`;
+}
+
+async function uploadImagesForQuestion(folderDir, bucketFiles, questionId) {
+  const updates = {};
+  for (const [bucket, fileName] of Object.entries(bucketFiles)) {
     if (!fileName) continue;
+    const columnKey = IMAGE_COLUMN_BY_BUCKET[bucket];
+    if (!columnKey) continue;
+    const newFileName = deriveNewImageName(questionId, columnKey, fileName);
+    if (!newFileName) continue;
     const fullPath = path.join(folderDir, fileName);
-    await uploadFileToRemote(fullPath, fileName);
+    await uploadFileToRemote(fullPath, newFileName);
+    updates[columnKey] = newFileName;
   }
+  return updates;
+}
+
+async function updateQuestionImageColumns(executeQuery, questionId, columns) {
+  const entries = Object.entries(columns).filter(
+    ([, value]) => value !== null && value !== undefined
+  );
+  if (entries.length === 0) return;
+  const setClause = entries.map(([column]) => `${column} = ?`).join(", ");
+  const params = entries.map(([, value]) => value);
+  params.push(questionId);
+  await executeQuery(`UPDATE questions SET ${setClause} WHERE id = ?`, params);
 }
 
 async function questionExistsByCbId(executeQuery, cbId) {
@@ -434,16 +487,6 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
           continue;
         }
 
-        try {
-          await uploadResolvedImagesToRemote(folderDir, images);
-        } catch (error) {
-          validationErrors.push({
-            cb_id: cbId,
-            reason: `Remote upload failed: ${error?.message || error}`,
-          });
-          continue;
-        }
-
         // MCQ options presence (text or image)
         if (questionType === 0) {
           const optionPairs = [
@@ -486,19 +529,19 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
           selectedSubjectId,
           selectedYearId,
           selectedTopicId,
-          pre_question_text: toNullable(rawQuestion.question),
+          pre_question_text: buildQuestionText(rawQuestion.question, rawQuestion.col1, rawQuestion.col2),
           option1_text: questionType === 0 ? toNullable(rawQuestion.op1) : null,
           option2_text: questionType === 0 ? toNullable(rawQuestion.op2) : null,
           option3_text: questionType === 0 ? toNullable(rawQuestion.op3) : null,
           option4_text: questionType === 0 ? toNullable(rawQuestion.op4) : null,
           correct_option: correctOption,
           pre_explanation_text: toNullable(rawQuestion.explanation),
-          question_image_url: images.question,
-          option1_image_url: images.option1,
-          option2_image_url: images.option2,
-          option3_image_url: images.option3,
-          option4_image_url: images.option4,
-          explanation_image_url: images.explanation,
+          question_image_url: null,
+          option1_image_url: null,
+          option2_image_url: null,
+          option3_image_url: null,
+          option4_image_url: null,
+          explanation_image_url: null,
           question_type: questionType,
           verified_status: "not_verified",
           difficulty_level: difficultyLevel,
@@ -515,6 +558,19 @@ module.exports = function registerUploadCl(app, { executeQuery, cbFolderDir } = 
         });
 
         const newQuestionId = await insertQuestion(executeQuery, payloadForInsert);
+
+        try {
+          const imageUpdates = await uploadImagesForQuestion(folderDir, images, newQuestionId);
+          await updateQuestionImageColumns(executeQuery, newQuestionId, imageUpdates);
+        } catch (imageError) {
+          await executeQuery("DELETE FROM questions WHERE id = ?", [newQuestionId]).catch(() => {});
+          validationErrors.push({
+            cb_id: cbId,
+            reason: `Image upload failed: ${imageError?.message || imageError}`,
+          });
+          continue;
+        }
+
         await insertMapping(executeQuery, cbId, newQuestionId);
 
         inserted.push({ cb_id: cbId, new_question_id: newQuestionId });
