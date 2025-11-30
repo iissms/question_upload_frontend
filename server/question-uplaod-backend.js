@@ -10,14 +10,85 @@ const {
   CDN_ALLOWED_IP,
   getCleanClientIp,
   saveBase64ToCdn,
+  saveBufferToCdn,
   saveFileToCdn
 } = require("./utils/cdnUploader");
 
+const ALLOWED_HOSTNAMES = new Set(["portal.examtech.org", "194.238.23.60"]);
+const ALLOWED_CLIENT_IPS = new Set(["194.238.23.60"]);
+
+const isAllowedOrigin = (originHeader) => {
+  if (!originHeader) return false;
+  try {
+    const { hostname } = new URL(originHeader);
+    return ALLOWED_HOSTNAMES.has(hostname);
+  } catch (_err) {
+    return ALLOWED_HOSTNAMES.has(originHeader);
+  }
+};
+
+const ALLOWED_HEADERS = [
+  "Content-Type",
+  "Authorization",
+  "session-id",
+  "session_id",
+  "sessionid",
+];
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin) {
+      // No Origin header (e.g., curl, same-origin) → require IP middleware to decide
+      return callback(null, true);
+    }
+
+    if (isAllowedOrigin(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error("Not allowed by CORS"));
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ALLOWED_HEADERS,
+  optionsSuccessStatus: 200,
+  credentials: true,
+};
+
 const app = express();
-app.use(cors()); // Enable CORS
+app.use(cors(corsOptions)); // Restrict CORS
+app.use((err, req, res, next) => {
+  if (err && err.message === "Not allowed by CORS") {
+    return res.status(403).json({ error: "Access denied: origin not allowed." });
+  }
+  if (err && err instanceof Error) {
+    return res.status(500).json({ error: err.message });
+  }
+  return next(err);
+});
 const foldername = "uploadquestion"; 
 const failedQuestionsFile = path.join(__dirname, "failed_questions.json");
 const { createWriteStream, existsSync, mkdirSync } = require("fs");
+app.use((req, res, next) => {
+  const clientIp = getCleanClientIp(req);
+  const originAllowed = isAllowedOrigin(req.headers.origin);
+  const refererAllowed = isAllowedOrigin(req.headers.referer);
+
+  if (
+    ALLOWED_CLIENT_IPS.has(clientIp) ||
+    originAllowed ||
+    refererAllowed ||
+    req.method === "OPTIONS"
+  ) {
+    return next();
+  }
+
+  return res.status(403).json({ error: "Access denied: unauthorized origin or IP." });
+});
+
+app.use((req, res, next) => {
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  next();
+});
+
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 
@@ -68,11 +139,25 @@ const upload = multer({
   },
 });
 
+const logoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = new Set([".png", ".jpg", ".jpeg", ".webp", ".svg"]);
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.has(ext)) {
+      return cb(null, true);
+    }
+    return cb(new Error("Unsupported logo format."));
+  }
+});
+
 const enforceCdnIp = (req, res, next) => {
   const cleanIp = getCleanClientIp(req);
   if (!CDN_ALLOWED_IP || cleanIp === CDN_ALLOWED_IP) {
     return next();
   }
+  // return next();
   return res.status(403).json({ error: "Access denied: Invalid IP." });
 };
 
@@ -89,6 +174,29 @@ app.post("/cdn/upload", enforceCdnIp, async (req, res) => {
   } catch (error) {
     console.error("CDN upload error:", error);
     return res.status(500).json({ error: "Failed to save file." });
+  }
+});
+
+app.post("/cdn/logo", enforceCdnIp, logoUpload.single("logo"), async (req, res) => {
+  const payloadFilename = req.body?.filename;
+  const file = req.file;
+
+  if (!file) {
+    return res.status(400).json({ error: "No logo provided." });
+  }
+
+  const finalFilename = payloadFilename || file.originalname;
+
+  try {
+    const savePath = await saveBufferToCdn(file.buffer, finalFilename);
+    return res.status(200).json({
+      message: "Logo uploaded successfully.",
+      path: savePath,
+      filename: path.basename(savePath)
+    });
+  } catch (error) {
+    console.error("Logo upload error:", error);
+    return res.status(500).json({ error: "Failed to upload logo." });
   }
 });
 
@@ -1254,6 +1362,6 @@ registerUploadCl(app, { executeQuery });
 registerUploadId(app, { executeQuery });
 
 // Start Server
-app.listen(3090, () => {
+app.listen(3089, () => {
   console.log("Server running on port 3000");
 });
