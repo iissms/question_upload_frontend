@@ -4,12 +4,91 @@ const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const registerUploadCl = require("./routes/uploadCl");
+const registerUploadId = require("./routes/uploadId");
+const {
+  CDN_ALLOWED_IP,
+  getCleanClientIp,
+  saveBase64ToCdn,
+  saveBufferToCdn,
+  saveFileToCdn
+} = require("./utils/cdnUploader");
+
+const ALLOWED_HOSTNAMES = new Set(["portal.examtech.org", "194.238.23.60"]);
+const ALLOWED_CLIENT_IPS = new Set(["194.238.23.60"]);
+
+const isAllowedOrigin = (originHeader) => {
+  if (!originHeader) return false;
+  try {
+    const { hostname } = new URL(originHeader);
+    return ALLOWED_HOSTNAMES.has(hostname);
+  } catch (_err) {
+    return ALLOWED_HOSTNAMES.has(originHeader);
+  }
+};
+
+const ALLOWED_HEADERS = [
+  "Content-Type",
+  "Authorization",
+  "session-id",
+  "session_id",
+  "sessionid",
+];
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin) {
+      // No Origin header (e.g., curl, same-origin) → require IP middleware to decide
+      return callback(null, true);
+    }
+
+    if (isAllowedOrigin(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error("Not allowed by CORS"));
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ALLOWED_HEADERS,
+  optionsSuccessStatus: 200,
+  credentials: true,
+};
 
 const app = express();
-app.use(cors()); // Enable CORS
+app.use(cors(corsOptions)); // Restrict CORS
+app.use((err, req, res, next) => {
+  if (err && err.message === "Not allowed by CORS") {
+    return res.status(403).json({ error: "Access denied: origin not allowed." });
+  }
+  if (err && err instanceof Error) {
+    return res.status(500).json({ error: err.message });
+  }
+  return next(err);
+});
 const foldername = "uploadquestion"; 
 const failedQuestionsFile = path.join(__dirname, "failed_questions.json");
 const { createWriteStream, existsSync, mkdirSync } = require("fs");
+app.use((req, res, next) => {
+  const clientIp = getCleanClientIp(req);
+  const originAllowed = isAllowedOrigin(req.headers.origin);
+  const refererAllowed = isAllowedOrigin(req.headers.referer);
+
+  if (
+    ALLOWED_CLIENT_IPS.has(clientIp) ||
+    originAllowed ||
+    refererAllowed ||
+    req.method === "OPTIONS"
+  ) {
+    return next();
+  }
+
+  return res.status(403).json({ error: "Access denied: unauthorized origin or IP." });
+});
+
+app.use((req, res, next) => {
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  next();
+});
+
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 
@@ -58,6 +137,67 @@ const upload = multer({
       cb(new Error("Only .json files are allowed!"), false);
     }
   },
+});
+
+const logoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = new Set([".png", ".jpg", ".jpeg", ".webp", ".svg"]);
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.has(ext)) {
+      return cb(null, true);
+    }
+    return cb(new Error("Unsupported logo format."));
+  }
+});
+
+const enforceCdnIp = (req, res, next) => {
+  const cleanIp = getCleanClientIp(req);
+  if (!CDN_ALLOWED_IP || cleanIp === CDN_ALLOWED_IP) {
+    return next();
+  }
+  // return next();
+  return res.status(403).json({ error: "Access denied: Invalid IP." });
+};
+
+app.post("/cdn/upload", enforceCdnIp, async (req, res) => {
+  const { base64, filename } = req.body || {};
+
+  if (!base64 || !filename) {
+    return res.status(400).json({ error: "Missing base64 or filename." });
+  }
+
+  try {
+    const savePath = await saveBase64ToCdn(base64, filename);
+    return res.status(200).json({ message: "File saved successfully.", path: savePath });
+  } catch (error) {
+    console.error("CDN upload error:", error);
+    return res.status(500).json({ error: "Failed to save file." });
+  }
+});
+
+app.post("/cdn/logo", enforceCdnIp, logoUpload.single("logo"), async (req, res) => {
+  const payloadFilename = req.body?.filename;
+  const file = req.file;
+
+  if (!file) {
+    return res.status(400).json({ error: "No logo provided." });
+  }
+
+  const finalFilename = payloadFilename || file.originalname;
+
+  try {
+    const savePath = await saveBufferToCdn(file.buffer, finalFilename);
+    return res.status(200).json({
+      message: "Logo uploaded successfully.",
+      path: savePath,
+      filename: path.basename(savePath)
+    });
+  } catch (error) {
+    console.error("Logo upload error:", error);
+    return res.status(500).json({ error: "Failed to upload logo." });
+  }
 });
 
 // ✅ Upload API
@@ -637,6 +777,19 @@ async function processQuestionImages(question, newQuestionId) {
 
 const fsp = fs.promises;
 
+async function uploadFileToRemote(filePath, fileName) {
+  try {
+    const savedPath = await saveFileToCdn(filePath, fileName);
+    console.log(`[upload/id] Saved ${fileName} to CDN directory at ${savedPath}`);
+  } catch (err) {
+    console.error(
+      `[upload/id] CDN save failed for ${fileName}:`,
+      err?.message || err
+    );
+  }
+}
+
+
 
 // ---- folder where source images live ----
 const TG_FOLDER_DIR = process.env.TG_FOLDER_DIR
@@ -669,6 +822,25 @@ function extractAndRemoveImages(text) {
   s = s.replace(IMG_HTML_RE, (_m, src) => (urls.push(src), ""));
   s = s.replace(IMG_MD_RE,   (_m, url) => (urls.push(url), ""));
   return { text: s.trim(), images: urls };
+}
+function collectImageRefs(...values) {
+  const out = [];
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        if (typeof entry === "string" && entry.trim()) out.push(entry.trim());
+      }
+      continue;
+    }
+    if (typeof value === "string" && value.trim()) {
+      out.push(value.trim());
+    }
+  }
+  return out;
+}
+function firstImageFrom(...values) {
+  const refs = collectImageRefs(...values);
+  return refs.length > 0 ? refs[0] : null;
 }
 function stripHtmlKeepText(s = "") {
   return s
@@ -705,14 +877,12 @@ function buildPlaceholders(rowCount, colsPerRow) {
 }
 function countQuestionBucketOriginal(q) {
   let total = countImgsInText(q?.question || "");
-  const qi = q?.question_images;
-  if (Array.isArray(qi)) total += qi.filter(x => typeof x === "string" && x.trim()).length;
+  total += collectImageRefs(q?.question_images, q?.question_image).length;
   return total;
 }
 function countSolutionBucketOriginal(q) {
   let total = countImgsInText(q?.solution || "");
-  const si = q?.solution_images;
-  if (Array.isArray(si)) total += si.filter(x => typeof x === "string" && x.trim()).length;
+  total += collectImageRefs(q?.solution_images, q?.solution_image).length;
   return total;
 }
 function countOptionsBucketOriginal(q) {
@@ -720,10 +890,7 @@ function countOptionsBucketOriginal(q) {
   let maxInOne = 0;
   for (const name of names) {
     let c = countImgsInText(q?.[name] || "");
-    const single = q?.[`${name}_image`];
-    if (typeof single === "string" && single.trim()) c += 1;
-    const many = q?.[`${name}_images`];
-    if (Array.isArray(many)) c += many.filter(x => typeof x === "string" && x.trim()).length;
+    c += collectImageRefs(q?.[`${name}_image`], q?.[`${name}_images`]).length;
     maxInOne = Math.max(maxInOne, c);
   }
   return maxInOne;
@@ -752,6 +919,128 @@ function buildDstName(newId, kind, optIndex, srcName) {
   return `${newId}_image_option_${optIndex}${ext}`;
 }
 
+const EXAM_ID_ENTRIES = [
+  { id: 152, name: "AIEEE", short_name: "AIEEE", year: "2011" },
+  { id: 153, name: "AIEEE", short_name: "AIEEE", year: "2012" },
+  { id: 154, name: "AIEEE", short_name: "AIEEE", year: "\u2264 2010" },
+  { id: 98, name: "AIIMS", short_name: "AIIMS", year: "2011" },
+  { id: 103, name: "AIIMS", short_name: "AIIMS", year: "2012" },
+  { id: 92, name: "AIIMS", short_name: "AIIMS", year: "2013" },
+  { id: 97, name: "AIIMS", short_name: "AIIMS", year: "2014" },
+  { id: 104, name: "AIIMS", short_name: "AIIMS", year: "2015" },
+  { id: 109, name: "AIIMS", short_name: "AIIMS", year: "2016" },
+  { id: 107, name: "AIIMS", short_name: "AIIMS", year: "2017" },
+  { id: 102, name: "AIIMS", short_name: "AIIMS", year: "2018" },
+  { id: 115, name: "AIIMS", short_name: "AIIMS", year: "\u2264 2010" },
+  { id: 98, name: "AIPMT", short_name: "AIPMT", year: "2011" },
+  { id: 103, name: "AIPMT", short_name: "AIPMT", year: "2012" },
+  { id: 97, name: "AIPMT", short_name: "AIPMT", year: "2014" },
+  { id: 104, name: "AIPMT", short_name: "AIPMT", year: "2015" },
+  { id: 115, name: "AIPMT", short_name: "AIPMT", year: "\u2264 2010" },
+  { id: 155, name: "COMEDK", short_name: "COMEDK", year: "2012" },
+  { id: 156, name: "COMEDK", short_name: "COMEDK", year: "2013" },
+  { id: 157, name: "COMEDK", short_name: "COMEDK", year: "2014" },
+  { id: 158, name: "COMEDK", short_name: "COMEDK", year: "2015" },
+  { id: 159, name: "COMEDK", short_name: "COMEDK", year: "\u2264 2010" },
+  { id: 78, name: "JEE Advanced", short_name: "JEE Advanced", year: "2015" },
+  { id: 78, name: "JEE Main", short_name: "JEE", year: "2011" },
+  { id: 78, name: "JEE Main", short_name: "JEE", year: "2013" },
+  { id: 83, name: "JEE Main", short_name: "JEE", year: "2014" },
+  { id: 80, name: "JEE Main", short_name: "JEE", year: "2015" },
+  { id: 79, name: "JEE Main", short_name: "JEE", year: "2016" },
+  { id: 88, name: "JEE Main", short_name: "JEE", year: "2017" },
+  { id: 86, name: "JEE Main", short_name: "JEE", year: "2018" },
+  { id: 76, name: "JEE Main", short_name: "JEE", year: "2019" },
+  { id: 81, name: "JEE Main", short_name: "JEE", year: "2020" },
+  { id: 125, name: "JEE Main", short_name: "JEE", year: "2021" },
+  { id: 160, name: "JEE Main", short_name: "JEE", year: "2022" },
+  { id: 131, name: "JEE Main", short_name: "JEE", year: "2023" },
+  { id: 134, name: "JEE Main", short_name: "JEE", year: "2024" },
+  { id: 137, name: "JEE Main", short_name: "JEE", year: "2025" },
+  { id: 78, name: "JEE Main", short_name: "JEE", year: "\u2264 2010" },
+  { id: 106, name: "JIPMER", short_name: "JIPMER", year: "2011" },
+  { id: 103, name: "JIPMER", short_name: "JIPMER", year: "2012" },
+  { id: 105, name: "JIPMER", short_name: "JIPMER", year: "2013" },
+  { id: 97, name: "JIPMER", short_name: "JIPMER", year: "2014" },
+  { id: 101, name: "JIPMER", short_name: "JIPMER", year: "2015" },
+  { id: 109, name: "JIPMER", short_name: "JIPMER", year: "2016" },
+  { id: 115, name: "JIPMER", short_name: "JIPMER", year: "\u2264 2010" },
+  { id: 161, name: "KCET", short_name: "KCET", year: "2011" },
+  { id: 162, name: "KCET", short_name: "KCET", year: "2012" },
+  { id: 163, name: "KCET", short_name: "KCET", year: "2013" },
+  { id: 73,  name: "KCET", short_name: "KCET", year: "2014" },
+  { id: 87,  name: "KCET", short_name: "KCET", year: "2015" },
+  { id: 82,  name: "KCET", short_name: "KCET", year: "2016" },
+  { id: 72,  name: "KCET", short_name: "KCET", year: "2017" },
+  { id: 85,  name: "KCET", short_name: "KCET", year: "2018" },
+  { id: 75,  name: "KCET", short_name: "KCET", year: "2019" },
+  { id: 124, name: "KCET", short_name: "KCET", year: "2020" },
+  { id: 112, name: "KCET", short_name: "KCET", year: "2021" },
+  { id: 90,  name: "KCET", short_name: "KCET", year: "2022" },
+  { id: 133, name: "KCET", short_name: "KCET", year: "2023" },
+  { id: 136, name: "KCET", short_name: "KCET", year: "2024" },
+  { id: 164, name: "KCET", short_name: "KCET", year: "\u2264 2010" },
+  { id: 110, name: "NEET", short_name: "NEET", year: "2013" },
+  { id: 109, name: "NEET", short_name: "NEET", year: "2016" },
+  { id: 107, name: "NEET", short_name: "NEET", year: "2017" },
+  { id: 102, name: "NEET", short_name: "NEET", year: "2018" },
+  { id: 100, name: "NEET", short_name: "NEET", year: "2019" },
+  { id: 117, name: "NEET", short_name: "NEET", year: "2020" },
+  { id: 91,  name: "NEET", short_name: "NEET", year: "2021" },
+  { id: 126, name: "NEET", short_name: "NEET", year: "2022" },
+  { id: 132, name: "NEET", short_name: "NEET", year: "2023" },
+  { id: 135, name: "NEET", short_name: "NEET", year: "2024" },
+  { id: 138, name: "NEET", short_name: "NEET", year: "2025" }
+];
+
+const EXAM_LOOKUP_MAP = (() => {
+  const map = new Map();
+  for (const entry of EXAM_ID_ENTRIES) {
+    const yearKey = String(entry.year).trim();
+    const nameKey = (entry.name || "").trim().toLowerCase();
+    const shortKey = (entry.short_name || "").trim().toLowerCase();
+    if (nameKey) {
+      map.set(`${nameKey}|${yearKey}`, entry.id);
+    }
+    if (shortKey && shortKey !== nameKey) {
+      map.set(`${shortKey}|${yearKey}`, entry.id);
+    }
+  }
+  return map;
+})();
+
+function resolveExamIds(exams) {
+  if (!Array.isArray(exams) || exams.length === 0) return [];
+  const ids = [];
+  const seen = new Set();
+  for (const exam of exams) {
+    if (!exam) continue;
+    const rawYear = exam.year;
+    const year = rawYear == null ? "" : String(rawYear).trim();
+    if (!year) continue;
+    const nameCandidates = [];
+    if (typeof exam.name === "string" && exam.name.trim()) {
+      nameCandidates.push(exam.name.trim().toLowerCase());
+    }
+    if (typeof exam.short_name === "string" && exam.short_name.trim()) {
+      nameCandidates.push(exam.short_name.trim().toLowerCase());
+    }
+    let id = null;
+    for (const candidate of nameCandidates) {
+      const key = `${candidate}|${year}`;
+      if (EXAM_LOOKUP_MAP.has(key)) {
+        id = EXAM_LOOKUP_MAP.get(key);
+        break;
+      }
+    }
+    if (id != null && !seen.has(id)) {
+      ids.push(id);
+      seen.add(id);
+    }
+  }
+  return ids;
+}
+
 /**
  * Try to move file from tg_folder to new filename.
  * Returns { name: <finalFileName>, found: boolean }.
@@ -776,6 +1065,7 @@ async function tryRenameFromTgFolder(srcName, dstName, tgId, newId, bucket, miss
         throw e;
       }
     }
+    await uploadFileToRemote(dst, dstName);
     return { name: dstName, found: true };
   } catch (e) {
     console.warn(`[upload/id] Source image not found; keeping name only: ${srcName} -> ${dstName}`);
@@ -811,7 +1101,19 @@ app.post("/upload/tg", async (req, res) => {
   const TX_ROLLBACK = "ROLLBACK";
 
   try {
-    const { mode, yearId, subjectId, chapterId, topicId, payload } = req.body || {};
+    const {
+      mode,
+      yearId,
+      subjectId,
+      chapterId,
+      topicId,
+      payload,
+      difficult_level: requestDifficultyLevel
+    } = req.body || {};
+    console.log(`[upload/id] Received upload/tg request: mode=${mode}, yearId=${yearId}, subjectId=${subjectId}, chapterId=${chapterId}, topicId=${topicId}, payload.length=${Array.isArray(payload) ? payload.length : 0}`);
+    console.log(`[upload/id] requestDifficultyLevel: ${requestDifficultyLevel}`);
+    const fallbackDifficultyLevel =
+      requestDifficultyLevel === undefined ? null : requestDifficultyLevel;
     // if (mode !== "id") return res.status(400).json({ error: "Invalid mode: expected 'id'" });
     if (!Array.isArray(payload) || payload.length === 0)
       return res.status(400).json({ error: "payload must be a non-empty array" });
@@ -821,6 +1123,8 @@ app.post("/upload/tg", async (req, res) => {
     const alreadyUploaded = [];
     const skippedMissingImages = [];
     const duplicateInPayload = [];
+    const skippedNumericMissingAnswer = [];
+    const skippedMultipleAnswers = [];
     const rows = [];                 // first insert (image cols NULL), update later
     const tgIdsInOrder = [];
     const oldIntIdsInOrder = [];
@@ -857,17 +1161,20 @@ app.post("/upload/tg", async (req, res) => {
         const qImgs = countQuestionBucketOriginal(q);
         const sImgs = countSolutionBucketOriginal(q);
         const oImgs = countOptionsBucketOriginal(q);
-        if (qImgs >= 2 || sImgs >= 2 || oImgs >= 2) {
+        if (qImgs > 2 || sImgs > 2 || oImgs > 2) {
           skipped.push({
             key: q.key,
-            reason: ">=2 images in bucket",
+            reason: ">2 images in bucket",
             buckets: { question_imgs: qImgs, options_max_in_one: oImgs, solution_imgs: sImgs }
           });
           continue;
         }
 
         const answers = Array.isArray(q.answer) ? q.answer : [];
-        if (answers.length > 1) { errors.push({ key: q.key, reason: "Multiple answers not allowed", answers }); continue; }
+        if (answers.length > 1) {
+          skippedMultipleAnswers.push({ key: q.key, tg_id: tgId, reason: "Multiple answers not allowed", answers });
+          continue;
+        }
         if (answers.length === 0) { errors.push({ key: q.key, reason: "Missing answer" }); continue; }
 
         const { text: cleanQuestion, images: qImgsFound } = extractAndRemoveImages(q.question);
@@ -877,12 +1184,12 @@ app.post("/upload/tg", async (req, res) => {
         const opt3 = extractAndRemoveImages(q.option3);
         const opt4 = extractAndRemoveImages(q.option4);
 
-        const qSrc  = basenameFromAny((qImgsFound[0] || (Array.isArray(q.question_images) ? q.question_images[0] : null)) || null);
-        const sSrc  = basenameFromAny((sImgsFound[0] || (Array.isArray(q.solution_images) ? q.solution_images[0] : null)) || null);
-        const o1Src = basenameFromAny((opt1.images[0] || q.option1_image || (Array.isArray(q.option1_images) ? q.option1_images[0] : null)) || null);
-        const o2Src = basenameFromAny((opt2.images[0] || q.option2_image || (Array.isArray(q.option2_images) ? q.option2_images[0] : null)) || null);
-        const o3Src = basenameFromAny((opt3.images[0] || q.option3_image || (Array.isArray(q.option3_images) ? q.option3_images[0] : null)) || null);
-        const o4Src = basenameFromAny((opt4.images[0] || q.option4_image || (Array.isArray(q.option4_images) ? q.option4_images[0] : null)) || null);
+        const qSrc  = basenameFromAny(firstImageFrom(qImgsFound, q.question_images, q.question_image));
+        const sSrc  = basenameFromAny(firstImageFrom(sImgsFound, q.solution_images, q.solution_image));
+        const o1Src = basenameFromAny(firstImageFrom(opt1.images, q.option1_image, q.option1_images));
+        const o2Src = basenameFromAny(firstImageFrom(opt2.images, q.option2_image, q.option2_images));
+        const o3Src = basenameFromAny(firstImageFrom(opt3.images, q.option3_image, q.option3_images));
+        const o4Src = basenameFromAny(firstImageFrom(opt4.images, q.option4_image, q.option4_images));
 
         const missingSources = [];
         const sourcesToCheck = [
@@ -937,7 +1244,10 @@ app.post("/upload/tg", async (req, res) => {
           }
         } else {
           answerOut = stripHtmlKeepText(answers[0]);
-          if (!answerOut) { errors.push({ key: q.key, reason: "Numeric question requires a numeric/text answer" }); continue; }
+          if (!answerOut) {
+            skippedNumericMissingAnswer.push({ key: q.key, tg_id: tgId, reason: "Numeric question requires a numeric/text answer" });
+            continue;
+          }
         }
 
         // terminal preview
@@ -960,6 +1270,19 @@ app.post("/upload/tg", async (req, res) => {
           solution_image: sSrc || null
         }, null, 2));
 
+        const rawDifficultyLevel =
+          q?.difficulty_level ??
+          q?.difficult_level ??
+          q?.difficulty ??
+          null;
+        console.log("Raw difficulty level:", rawDifficultyLevel);
+        const questionDifficultyLevel =
+          rawDifficultyLevel === undefined ? null : rawDifficultyLevel;
+        const difficultyLevel =
+          questionDifficultyLevel ?? fallbackDifficultyLevel;
+        const examIds = resolveExamIds(q?.exams);
+        const previousPapersJson = examIds.length > 0 ? JSON.stringify(examIds) : null;
+
         seenTgIds.add(tgId);
 
         // first insert (images null)
@@ -975,9 +1298,16 @@ app.post("/upload/tg", async (req, res) => {
           opt4.text || null,
           answerOut || null,
           cleanSolution || null,
-          null, null, null, null, null, null, // image columns
+          null, // question_image_url
+          null, // option1_image_url
+          null, // option2_image_url
+          null, // option3_image_url
+          null, // option4_image_url
+          difficultyLevel,
+          null, // explanation_image_url
           qTypeCode,
-          "not_verified"
+          "not_verified",
+          previousPapersJson
         ]);
 
         // remember sources for rename
@@ -997,32 +1327,38 @@ app.post("/upload/tg", async (req, res) => {
         skipped_due_to_images: skipped,
         already_uploaded: alreadyUploaded,
         skipped_due_to_missing_images: skippedMissingImages,
-        duplicate_in_payload: duplicateInPayload
+        duplicate_in_payload: duplicateInPayload,
+        skipped_due_to_multiple_answers: skippedMultipleAnswers,
+        skipped_numeric_missing_answer: skippedNumericMissingAnswer
       });
     }
 
     if (rows.length === 0) {
       return res.json({
         status: "ok",
-        message: "No questions to insert (all skipped due to ≥2 images or none provided).",
+        message: "No questions to insert (all skipped due to >2 images or none provided).",
         stats: {
           inserted: 0,
           skipped: skipped.length,
           already_uploaded: alreadyUploaded.length,
           skipped_due_to_missing_images: skippedMissingImages.length,
-          duplicate_in_payload: duplicateInPayload.length
+          duplicate_in_payload: duplicateInPayload.length,
+          skipped_due_to_multiple_answers: skippedMultipleAnswers.length,
+          skipped_numeric_missing_answer: skippedNumericMissingAnswer.length
         },
         skipped_due_to_images: skipped,
         already_uploaded: alreadyUploaded,
         skipped_due_to_missing_images: skippedMissingImages,
-        duplicate_in_payload: duplicateInPayload
+        duplicate_in_payload: duplicateInPayload,
+        skipped_due_to_multiple_answers: skippedMultipleAnswers,
+        skipped_numeric_missing_answer: skippedNumericMissingAnswer
       });
     }
 
     // ---- transaction: insert -> mapping -> rename -> update ----
     await executeQuery(TX_BEGIN);
 
-    const placeholders = buildPlaceholders(rows.length, 19);
+    const placeholders = buildPlaceholders(rows.length, 21);
     const SQL_INSERT_QUESTIONS = `
       INSERT INTO questions (
         selectedChapterId,
@@ -1041,9 +1377,11 @@ app.post("/upload/tg", async (req, res) => {
         option2_image_url,
         option3_image_url,
         option4_image_url,
+        difficulty_level,
         explanation_image_url,
         question_type,
-        verified_status
+        verified_status,
+        previousPapers
       ) VALUES ${placeholders}
     `;
     const insertRes = await executeQuery(SQL_INSERT_QUESTIONS, rows.flat());
@@ -1140,18 +1478,22 @@ app.post("/upload/tg", async (req, res) => {
 
     return res.json({
       status: "ok",
-      message: "Questions inserted, mapped, images renamed (filenames only), and updated. Skipped any with ≥2 images, duplicates, or missing source images.",
+      message: "Questions inserted, mapped, images renamed (filenames only), and updated. Skipped any with >2 images, duplicates, or missing source images.",
       stats: {
         inserted: rows.length,
         skipped_due_to_image_limits: skipped.length,
         already_uploaded: alreadyUploaded.length,
         skipped_due_to_missing_images: skippedMissingImages.length,
-        duplicate_in_payload: duplicateInPayload.length
+        duplicate_in_payload: duplicateInPayload.length,
+        skipped_due_to_multiple_answers: skippedMultipleAnswers.length,
+        skipped_numeric_missing_answer: skippedNumericMissingAnswer.length
       },
       skipped_due_to_images: skipped,
       already_uploaded: alreadyUploaded,
       skipped_due_to_missing_images: skippedMissingImages,
       duplicate_in_payload: duplicateInPayload,
+      skipped_due_to_multiple_answers: skippedMultipleAnswers,
+      skipped_numeric_missing_answer: skippedNumericMissingAnswer,
       id_map_preview: newIds.slice(0, 5).map((id, i) => ({ tg_id: tgIdsInOrder[i], new_id: id })),
       // >>> The only image-missing summary you asked for:
       missing_images_summary: {
@@ -1170,6 +1512,10 @@ app.post("/upload/tg", async (req, res) => {
     });
   }
 });
+
+// Register custom routes
+registerUploadCl(app, { executeQuery });
+registerUploadId(app, { executeQuery });
 
 // Start Server
 app.listen(3089, () => {

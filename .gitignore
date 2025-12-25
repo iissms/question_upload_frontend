@@ -22,3 +22,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .env
+
+server/routes/cb_folder
+server/tg_folder
